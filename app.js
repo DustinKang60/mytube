@@ -19,23 +19,27 @@ function rotateInstance() {
   console.log(`Switching Invidious instance to: ${getBaseUrl()}`);
 }
 
-// Fetch helper with auto-failover
+// Fetch helper with auto-failover and CORS proxy bypass
 async function fetchFromInvidious(endpoint) {
   let attempts = 0;
   while (attempts < INVIDIOUS_INSTANCES.length) {
-    const url = `${getBaseUrl()}${endpoint}`;
+    const targetUrl = `${getBaseUrl()}${endpoint}`;
+    // allorigins CORS proxy to bypass CORS restrictions in browsers
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
     try {
       const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), 8000); // 8s timeout
+      const id = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await fetch(proxyUrl, { signal: controller.signal });
       clearTimeout(id);
 
       if (response.ok) {
-        return await response.json();
+        const proxyData = await response.json();
+        // allorigins returns stringified JSON in contents property
+        return JSON.parse(proxyData.contents);
       }
     } catch (e) {
-      console.warn(`Failed fetching from ${url}:`, e);
+      console.warn(`Failed fetching from ${targetUrl} via proxy:`, e);
     }
     rotateInstance();
     attempts++;
