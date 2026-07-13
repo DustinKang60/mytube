@@ -29,13 +29,12 @@
     <main class="app-body">
       <!-- Player Panel -->
       <section class="player-panel">
-        <div class="artwork-container">
-          <img id="track-art" src="https://images.unsplash.com/photo-1614680376593-902f74fa0d41?w=500&auto=format&fit=crop&q=60" alt="Album Art">
-          <div class="pulse-ring"></div>
-        </div>
-        <div class="track-info">
-          <h2 id="track-title" class="marquee">재생할 곡을 선택해주세요</h2>
-          <p id="track-channel">채널명</p>
+        <div class="now-playing">
+          <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+          <div class="track-info">
+            <h2 id="track-title" class="marquee">재생할 곡을 선택해주세요</h2>
+            <p id="track-channel">채널명</p>
+          </div>
         </div>
 
         <!-- Hidden YouTube IFrame Player (audio-only playback engine) -->

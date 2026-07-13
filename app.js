@@ -158,7 +158,6 @@ const state = {
 const playBtn = document.getElementById('play-btn');
 const prevBtn = document.getElementById('prev-btn');
 const nextBtn = document.getElementById('next-btn');
-const trackArt = document.getElementById('track-art');
 const trackTitle = document.getElementById('track-title');
 const trackChannel = document.getElementById('track-channel');
 const currentTimeEl = document.getElementById('current-time');
@@ -411,7 +410,6 @@ function playTrack(index) {
   const thumb = track.videoThumbnails
     ? track.videoThumbnails[track.videoThumbnails.length - 1].url
     : `https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg`;
-  trackArt.src = thumb;
 
   renderTracks();
   setupMediaSession(track, thumb);
