@@ -340,9 +340,20 @@ function updatePlayButton() {
 }
 
 // Toggle Play/Pause
-playBtn.addEventListener('click', () => {
+playBtn.addEventListener('click', async () => {
   if (state.currentTrackIndex === -1) {
-    // If nothing selected, play first track of playlist
+    // If playlist is empty, try loading the first subscribed channel's tracks first
+    if (state.currentPlaylist.length === 0) {
+      if (state.subscribedChannels.length > 0) {
+        trackTitle.textContent = '채널 목록 로딩 중...';
+        await loadChannelVideos(state.subscribedChannels[0].authorId);
+      } else {
+        alert('구독 중인 채널이 없습니다. 설정에서 채널을 추가해 주세요.');
+        return;
+      }
+    }
+    
+    // Play first track of playlist
     if (state.currentPlaylist.length > 0) {
       playTrack(0);
     }
@@ -354,9 +365,13 @@ playBtn.addEventListener('click', () => {
     state.isPlaying = false;
     document.querySelector('.player-panel').classList.remove('playing');
   } else {
-    audioPlayer.play();
-    state.isPlaying = true;
-    document.querySelector('.player-panel').classList.add('playing');
+    try {
+      await audioPlayer.play();
+      state.isPlaying = true;
+      document.querySelector('.player-panel').classList.add('playing');
+    } catch (e) {
+      console.error("Playback failed", e);
+    }
   }
   updatePlayButton();
 });
