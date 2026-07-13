@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mytube-v1';
+const CACHE_NAME = 'mytube-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -34,8 +34,8 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  // Piped / Invidious API 호출과 같은 외부 오디오 및 데이터 요청은 캐싱하지 않고 네트워크로 직접 요청
-  if (e.request.url.includes('api') || e.request.url.includes('googlevideo') || e.request.url.includes('manifest')) {
+  // 외부 데이터/재생 요청(RSS 프록시, YouTube 플레이어 등)은 캐싱하지 않고 네트워크로 직접 요청
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== self.location.origin) {
     return;
   }
 

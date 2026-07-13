@@ -38,8 +38,8 @@
           <p id="track-channel">채널명</p>
         </div>
 
-        <!-- Custom Audio Element -->
-        <audio id="audio-player" style="display: none;"></audio>
+        <!-- Hidden YouTube IFrame Player (audio-only playback engine) -->
+        <div class="yt-player-hidden"><div id="yt-player"></div></div>
 
         <!-- Progress Area -->
         <div class="progress-container">
@@ -128,5 +128,7 @@
   </div>
 
   <script src="app.js"></script>
+  <!-- YouTube IFrame Player API (calls window.onYouTubeIframeAPIReady defined in app.js) -->
+  <script src="https://www.youtube.com/iframe_api"></script>
 </body>
 </html>

@@ -561,3 +561,15 @@ body {
 .delete-btn:hover {
   opacity: 1;
 }
+
+/* Hidden YouTube IFrame player: kept in the DOM (audio keeps playing) but visually removed */
+.yt-player-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  left: -9999px;
+  top: -9999px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
