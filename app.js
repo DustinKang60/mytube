@@ -1,8 +1,9 @@
-// Invidious instances to fetch data from
 const INVIDIOUS_INSTANCES = [
-  'https://invidious.projectsegfau.lt',
+  'https://invidious.asir.dev',
+  'https://invidious.io.lol',
+  'https://invidious.no-logs.com',
+  'https://iv.melmac.space',
   'https://invidious.flokinet.to',
-  'https://invidious.privacydev.net',
   'https://yewtu.be',
   'https://vid.priv.au'
 ];
