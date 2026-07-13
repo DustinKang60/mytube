@@ -1,0 +1,22 @@
+{
+  "name": "mytube - Audio Radio",
+  "short_name": "mytube",
+  "description": "YouTube 특정 채널의 오디오 콘텐츠 백그라운드 재생 라디오",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0d0e15",
+  "theme_color": "#ff003c",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ]
+}

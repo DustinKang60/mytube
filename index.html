@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mytube - Youtube Audio Radio</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+  <!-- Google Fonts: Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-accent">my</span>tube
+      </div>
+      <button id="settings-btn" class="icon-btn" aria-label="설정">
+        <i data-lucide="settings"></i>
+      </button>
+    </header>
+
+    <!-- Main Section -->
+    <main class="app-body">
+      <!-- Player Panel -->
+      <section class="player-panel">
+        <div class="artwork-container">
+          <img id="track-art" src="https://images.unsplash.com/photo-1614680376593-902f74fa0d41?w=500&auto=format&fit=crop&q=60" alt="Album Art">
+          <div class="pulse-ring"></div>
+        </div>
+        <div class="track-info">
+          <h2 id="track-title" class="marquee">재생할 곡을 선택해주세요</h2>
+          <p id="track-channel">채널명</p>
+        </div>
+
+        <!-- Custom Audio Element -->
+        <audio id="audio-player" style="display: none;"></audio>
+
+        <!-- Progress Area -->
+        <div class="progress-container">
+          <span id="current-time">0:00</span>
+          <div id="progress-bar-container" class="progress-bar-bg">
+            <div id="progress-bar" class="progress-bar-fill"></div>
+          </div>
+          <span id="duration-time">0:00</span>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+          <button id="prev-btn" class="icon-btn ctrl-btn" aria-label="이전곡">
+            <i data-lucide="skip-back"></i>
+          </button>
+          <button id="play-btn" class="icon-btn ctrl-btn play-main" aria-label="재생">
+            <i data-lucide="play" class="play-icon"></i>
+          </button>
+          <button id="next-btn" class="icon-btn ctrl-btn" aria-label="다음곡">
+            <i data-lucide="skip-forward"></i>
+          </button>
+        </div>
+      </section>
+
+      <!-- Channels & Playlist Tabs -->
+      <section class="tabs-container">
+        <div class="tabs-nav">
+          <button id="tab-channels-btn" class="tab-btn active">구독 채널</button>
+          <button id="tab-tracks-btn" class="tab-btn">최근 비디오</button>
+        </div>
+
+        <div class="tab-content">
+          <!-- Channels list -->
+          <div id="tab-channels" class="tab-pane active">
+            <div id="channels-list" class="channels-grid">
+              <!-- Dynamically populated -->
+            </div>
+            <div id="no-channels-msg" class="empty-msg">
+              <i data-lucide="radio" class="empty-icon"></i>
+              <p>구독 중인 채널이 없습니다.<br>오른쪽 위 설정 아이콘을 눌러 추가해보세요!</p>
+            </div>
+          </div>
+
+          <!-- Tracks/Videos list -->
+          <div id="tab-tracks" class="tab-pane">
+            <div id="tracks-list" class="tracks-list-container">
+              <!-- Dynamically populated -->
+            </div>
+            <div id="no-tracks-msg" class="empty-msg">
+              <i data-lucide="list-music" class="empty-icon"></i>
+              <p>채널을 클릭하여 동영상 목록을 확인해 보세요.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Settings Overlay Modal -->
+    <div id="settings-modal" class="modal-overlay">
+      <div class="modal-card">
+        <header class="modal-header">
+          <h3>채널 설정</h3>
+          <button id="close-settings-btn" class="icon-btn">
+            <i data-lucide="x"></i>
+          </button>
+        </header>
+
+        <div class="modal-body">
+          <div class="search-box">
+            <input type="text" id="channel-search-input" placeholder="유튜브 채널 ID 또는 URL 입력...">
+            <button id="add-channel-btn" class="accent-btn">추가</button>
+          </div>
+          <p class="search-tip">
+            예: 채널 핸들(@example)이나 채널 ID(UC...)를 직접 입력하세요.
+          </p>
+
+          <div class="settings-channels-list-container">
+            <h4>구독 중인 채널 목록 (<span id="settings-count">0</span>)</h4>
+            <ul id="settings-channels-list">
+              <!-- Dynamically populated -->
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
