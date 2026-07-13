@@ -150,7 +150,13 @@ const state = {
   currentTrackIndex: -1,
   isPlaying: false,
   activeTab: 'channels',  // 'channels' or 'tracks'
+  engine: null,           // 'server' (<audio>) or 'iframe' (YouTube embed)
 };
+
+// Personal background-playback server URL (empty = use YouTube embed fallback).
+function getServerUrl() {
+  return (localStorage.getItem('mytube_server_url') || '').trim().replace(/\/+$/, '');
+}
 
 // ============================================================================
 //  DOM Elements
@@ -164,6 +170,7 @@ const currentTimeEl = document.getElementById('current-time');
 const durationTimeEl = document.getElementById('duration-time');
 const progressBar = document.getElementById('progress-bar');
 const progressBarContainer = document.getElementById('progress-bar-container');
+const audioPlayer = document.getElementById('audio-player');
 
 const tabChannelsBtn = document.getElementById('tab-channels-btn');
 const tabTracksBtn = document.getElementById('tab-tracks-btn');
@@ -181,6 +188,9 @@ const channelSearchInput = document.getElementById('channel-search-input');
 const addChannelBtn = document.getElementById('add-channel-btn');
 const settingsChannelsList = document.getElementById('settings-channels-list');
 const settingsCount = document.getElementById('settings-count');
+const serverUrlInput = document.getElementById('server-url-input');
+const saveServerBtn = document.getElementById('save-server-btn');
+const serverStatus = document.getElementById('server-status');
 
 // ============================================================================
 //  YouTube IFrame Player (audio playback engine)
@@ -254,6 +264,50 @@ function startProgressTimer() {
     if (dur > 0) progressBar.style.width = `${(cur / dur) * 100}%`;
   }, 500);
 }
+
+// ============================================================================
+//  <audio> engine (personal server — background/lock-screen playback)
+// ============================================================================
+audioPlayer.addEventListener('play', () => {
+  state.isPlaying = true;
+  updatePlayButton();
+  document.querySelector('.player-panel').classList.add('playing');
+  const track = state.currentPlaylist[state.currentTrackIndex];
+  if (track) trackTitle.textContent = track.title;
+});
+
+audioPlayer.addEventListener('pause', () => {
+  if (state.engine !== 'server') return;
+  state.isPlaying = false;
+  updatePlayButton();
+  document.querySelector('.player-panel').classList.remove('playing');
+});
+
+audioPlayer.addEventListener('ended', () => {
+  if (state.engine === 'server') nextTrack();
+});
+
+audioPlayer.addEventListener('timeupdate', () => {
+  if (state.engine !== 'server') return;
+  const cur = audioPlayer.currentTime || 0;
+  const dur = audioPlayer.duration || 0;
+  currentTimeEl.textContent = formatTime(cur);
+  if (!isNaN(dur) && dur > 0) {
+    durationTimeEl.textContent = formatTime(dur);
+    progressBar.style.width = `${(cur / dur) * 100}%`;
+  }
+});
+
+// Server unreachable / stream failed → fall back to the YouTube embed.
+audioPlayer.addEventListener('error', () => {
+  if (state.engine !== 'server') return; // ignore errors from clearing src
+  console.warn('Server playback failed — falling back to YouTube embed.');
+  const track = state.currentPlaylist[state.currentTrackIndex];
+  if (track) {
+    trackTitle.textContent = '서버 재생 실패 — 유튜브로 전환 중...';
+    playViaIframe(track);
+  }
+});
 
 // ============================================================================
 //  Helpers
@@ -414,13 +468,42 @@ function playTrack(index) {
   renderTracks();
   setupMediaSession(track, thumb);
 
+  // A personal server enables true background playback via <audio>; otherwise
+  // fall back to the YouTube embed (foreground only).
+  if (getServerUrl()) {
+    playViaServer(track);
+  } else {
+    playViaIframe(track);
+  }
+}
+
+// Stream audio from the personal server through the <audio> element.
+function playViaServer(track) {
+  state.engine = 'server';
+  clearInterval(progressTimer);
+  try {
+    if (ytPlayer && ytReady) ytPlayer.stopVideo();
+  } catch (e) { /* ignore */ }
+
+  audioPlayer.src = `${getServerUrl()}/audio/${track.videoId}`;
+  audioPlayer.load();
+  audioPlayer.play().catch((err) => console.warn('audio play() rejected:', err));
+}
+
+// Play through the hidden YouTube IFrame player (no-setup fallback).
+function playViaIframe(track) {
+  state.engine = 'iframe';
+  try {
+    audioPlayer.pause();
+    audioPlayer.removeAttribute('src');
+    audioPlayer.load();
+  } catch (e) { /* ignore */ }
+
   if (!ytReady || !ytPlayer) {
-    // Player still loading — remember what to play and start once it's ready.
     trackTitle.textContent = '플레이어 로딩 중... ' + track.title;
     pendingVideoId = track.videoId;
     return;
   }
-
   ytPlayer.loadVideoById(track.videoId); // auto-plays
 }
 
@@ -435,8 +518,8 @@ function setupMediaSession(track, thumbnail) {
     artwork: [{ src: thumbnail, sizes: '512x512', type: 'image/jpeg' }],
   });
 
-  navigator.mediaSession.setActionHandler('play', () => ytPlayer && ytPlayer.playVideo());
-  navigator.mediaSession.setActionHandler('pause', () => ytPlayer && ytPlayer.pauseVideo());
+  navigator.mediaSession.setActionHandler('play', resumePlayback);
+  navigator.mediaSession.setActionHandler('pause', pausePlayback);
   navigator.mediaSession.setActionHandler('previoustrack', () => prevTrack());
   navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack());
 }
@@ -461,6 +544,17 @@ function updatePlayButton() {
   refreshIcons();
 }
 
+// Engine-aware resume / pause used by the play button and media session.
+function resumePlayback() {
+  if (state.engine === 'server') audioPlayer.play();
+  else if (ytPlayer) ytPlayer.playVideo();
+}
+
+function pausePlayback() {
+  if (state.engine === 'server') audioPlayer.pause();
+  else if (ytPlayer) ytPlayer.pauseVideo();
+}
+
 // ============================================================================
 //  Event listeners
 // ============================================================================
@@ -480,21 +574,19 @@ playBtn.addEventListener('click', async () => {
     return;
   }
 
-  if (!ytPlayer) return;
-  if (state.isPlaying) {
-    ytPlayer.pauseVideo();
-  } else {
-    ytPlayer.playVideo();
-  }
+  if (state.isPlaying) pausePlayback();
+  else resumePlayback();
 });
 
 // Seek by clicking the progress bar
 progressBarContainer.addEventListener('click', (e) => {
-  if (!ytPlayer || typeof ytPlayer.getDuration !== 'function') return;
   const width = progressBarContainer.clientWidth;
-  const duration = ytPlayer.getDuration();
-  if (duration > 0) {
-    ytPlayer.seekTo((e.offsetX / width) * duration, true);
+  if (state.engine === 'server') {
+    const duration = audioPlayer.duration;
+    if (duration > 0) audioPlayer.currentTime = (e.offsetX / width) * duration;
+  } else if (ytPlayer && typeof ytPlayer.getDuration === 'function') {
+    const duration = ytPlayer.getDuration();
+    if (duration > 0) ytPlayer.seekTo((e.offsetX / width) * duration, true);
   }
 });
 
@@ -568,6 +660,33 @@ addChannelBtn.addEventListener('click', async () => {
   }
 });
 
+// Save / test the personal background-playback server URL
+saveServerBtn.addEventListener('click', async () => {
+  const url = serverUrlInput.value.trim().replace(/\/+$/, '');
+  localStorage.setItem('mytube_server_url', url);
+
+  if (!url) {
+    serverStatus.textContent = '서버 없음 — 유튜브 임베드로 재생합니다.';
+    serverStatus.className = 'server-status';
+    return;
+  }
+
+  serverStatus.textContent = '연결 확인 중...';
+  serverStatus.className = 'server-status';
+  try {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 8000);
+    const r = await fetch(`${url}/health`, { signal: controller.signal });
+    clearTimeout(id);
+    if (!r.ok) throw new Error('bad status');
+    serverStatus.textContent = '✓ 서버 연결됨 — 백그라운드 재생이 켜졌습니다.';
+    serverStatus.className = 'server-status ok';
+  } catch (e) {
+    serverStatus.textContent = '✗ 서버에 연결할 수 없습니다. 주소와 서버 상태를 확인하세요.';
+    serverStatus.className = 'server-status err';
+  }
+});
+
 // ============================================================================
 //  Service Worker
 // ============================================================================
@@ -584,4 +703,5 @@ if ('serviceWorker' in navigator) {
 //  Init
 // ============================================================================
 loadSubscribedChannels();
+serverUrlInput.value = getServerUrl();
 refreshIcons();

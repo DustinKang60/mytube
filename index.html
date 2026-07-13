@@ -37,7 +37,11 @@
           </div>
         </div>
 
-        <!-- Hidden YouTube IFrame Player (audio-only playback engine) -->
+        <!-- Playback engines:
+             1) <audio> streams from a personal yt-dlp server (keeps playing in
+                the background / with the screen off) when a server URL is set.
+             2) Hidden YouTube IFrame player as the no-setup fallback. -->
+        <audio id="audio-player" preload="none"></audio>
         <div class="yt-player-hidden"><div id="yt-player"></div></div>
 
         <!-- Progress Area -->
@@ -120,6 +124,19 @@
             <ul id="settings-channels-list">
               <!-- Dynamically populated -->
             </ul>
+          </div>
+
+          <div class="server-config">
+            <h4>백그라운드 재생 서버 <span class="optional-tag">선택</span></h4>
+            <div class="search-box">
+              <input type="text" id="server-url-input" placeholder="예: https://xxx.trycloudflare.com">
+              <button id="save-server-btn" class="accent-btn">저장</button>
+            </div>
+            <p class="search-tip">
+              개인 서버 주소를 입력하면 화면을 꺼도 재생이 유지됩니다.
+              비워두면 유튜브 임베드로 재생합니다(화면 켜야 함).
+              <span id="server-status" class="server-status"></span>
+            </p>
           </div>
         </div>
       </div>

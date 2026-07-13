@@ -580,3 +580,37 @@ body {
   opacity: 0;
   pointer-events: none;
 }
+
+/* Background-playback server config (settings modal) */
+.server-config {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-color);
+}
+
+.server-config h4 {
+  margin-bottom: 12px;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.optional-tag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  padding: 2px 8px;
+}
+
+.server-status {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.82rem;
+}
+
+.server-status.ok { color: #22c55e; }
+.server-status.err { color: #ef4444; }
