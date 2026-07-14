@@ -14,8 +14,33 @@ const CORS_PROXIES = [
   (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
 ];
 
-// Fetch a URL through the CORS proxy chain, returning the raw response text.
+// Fetch a URL through the personal server when one is configured, else through
+// the public CORS proxy chain. The server (residential IP, own CORS) is far more
+// reliable — public proxies are frequently rate limited or down.
 async function fetchViaProxy(targetUrl) {
+  const server = getServerUrl();
+  if (server) {
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 30000);
+      const res = await fetch(`${server}/fetch?url=${encodeURIComponent(targetUrl)}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(id);
+      if (res.ok) {
+        const text = await res.text();
+        if (text && text.length > 50) return text;
+      }
+      console.warn(`서버 /fetch 실패 (${res.status}) — 공개 프록시로 폴백`);
+    } catch (e) {
+      console.warn('서버 /fetch 오류 — 공개 프록시로 폴백:', e.message);
+    }
+  }
+  return fetchViaPublicProxy(targetUrl);
+}
+
+// Fetch a URL through the public CORS proxy chain, returning the raw response text.
+async function fetchViaPublicProxy(targetUrl) {
   let lastError = null;
   for (const buildProxyUrl of CORS_PROXIES) {
     const proxyUrl = buildProxyUrl(targetUrl);
@@ -283,7 +308,10 @@ async function fetchContinuation(ctx, channelName) {
         continuation: ctx.token,
       }),
     });
-    if (!r.ok) throw new Error(`서버 /browse 응답 ${r.status}`);
+    if (!r.ok) {
+      const detail = await r.text().catch(() => '');
+      throw new Error(`서버 /browse 응답 ${r.status} ${detail.slice(0, 120)}`);
+    }
     json = await r.json();
   } else {
     const url = `https://www.youtube.com/youtubei/v1/browse?key=${ctx.apiKey}`;
@@ -807,12 +835,14 @@ async function loadMoreVideos() {
   } catch (e) {
     console.error('더 보기 실패', e);
     if (getServerUrl()) {
-      // Server is configured but the request failed → worth telling the user.
-      alert('영상을 더 불러오지 못했습니다. 백그라운드 재생 서버 상태를 확인해 주세요.');
+      // With a server this is usually a transient network hiccup — keep the
+      // button so the user can just press it again instead of reloading.
+      alert('영상을 더 불러오지 못했습니다. 잠시 후 "더 보기"를 다시 눌러 주세요.');
+    } else {
+      // No server: public proxies can't do the continuation POST — stop quietly
+      // (the first batch of ~30 videos is already shown).
+      state.canLoadMore = false;
     }
-    // No server: public proxies can't do the continuation POST — stop quietly
-    // (the first batch of ~30 videos is already shown).
-    state.canLoadMore = false;
   } finally {
     state.loadingMore = false;
     renderTracks();

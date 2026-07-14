@@ -32,7 +32,7 @@ import subprocess
 import urllib.request
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 PORT = int(os.environ.get("PORT", "8080"))
 CACHE_TTL = 5 * 3600            # googlevideo URLs live ~6h; refresh a bit early
@@ -41,6 +41,8 @@ FORMAT = "ba[ext=m4a]/bestaudio[ext=m4a]/bestaudio"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# /fetch only relays these hosts — the tunnel is public, so never be an open proxy.
+ALLOWED_FETCH_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}
 _cache = {}  # videoId -> (url, expiry_epoch)
 
 
@@ -150,10 +152,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
 
         if path == "/health":
             self._simple(200, b'{"ok":true}', "application/json")
+            return
+
+        # GET /fetch?url=<youtube url> — relay a YouTube page/feed from this
+        # server's residential IP. The app uses this instead of the flaky public
+        # CORS proxies whenever a server is configured.
+        if path == "/fetch":
+            self._do_fetch(parse_qs(parsed.query).get("url", [""])[0])
             return
 
         m = re.match(r"^/audio/([^/]+)$", path)
@@ -197,6 +207,40 @@ class Handler(BaseHTTPRequestHandler):
             pass  # client seeked or navigated away; not an error
         finally:
             upstream.close()
+
+    def _do_fetch(self, raw_url):
+        # This server is reachable from the public internet through the tunnel,
+        # so only ever relay YouTube — never become an open proxy.
+        if not raw_url:
+            self._simple(400, b"missing url")
+            return
+        try:
+            host = (urlparse(raw_url).hostname or "").lower()
+        except Exception:
+            self._simple(400, b"bad url")
+            return
+        if not (host in ALLOWED_FETCH_HOSTS or host.endswith(".youtube.com")):
+            self._simple(403, b"host not allowed")
+            return
+
+        try:
+            r = urllib.request.urlopen(
+                urllib.request.Request(raw_url, headers={
+                    "User-Agent": UA,
+                    "Accept-Language": "ko-KR,ko;q=0.9",
+                }), timeout=30)
+            body = r.read()
+        except Exception as e:
+            self._simple(502, ("fetch error: %s" % e).encode())
+            return
+
+        self.send_response(200)
+        self._cors()
+        ctype = r.headers.get("Content-Type", "text/plain")
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _open_upstream(self, video_id, force):
         audio_url = extract_audio_url(video_id, force=force)
