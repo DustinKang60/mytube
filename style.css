@@ -390,6 +390,32 @@ body {
   color: var(--text-muted);
 }
 
+/* "더 보기" (load older videos) button */
+.load-more-btn {
+  align-self: center;
+  margin: 14px auto 6px;
+  padding: 10px 24px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 20px;
+  font-family: var(--font-main);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Empty Status messages */
 .empty-msg {
   display: flex;

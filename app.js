@@ -38,6 +38,49 @@ async function fetchViaProxy(targetUrl) {
   throw new Error(`모든 프록시 요청 실패${lastError ? ` (${lastError.message})` : ''}`);
 }
 
+// POST-capable proxies (for YouTube's internal continuation API, which only
+// answers POST). Fewer public proxies forward a POST body, so this list is
+// separate from the GET chain and may fail — "더 보기" degrades gracefully.
+const CORS_PROXIES_POST = [
+  (url) => `https://proxy.cors.sh/${url}`,
+  (url) => `https://thingproxy.freeboard.io/fetch/${url}`,
+  (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+];
+
+// POST a JSON body through the POST proxy chain and return the parsed JSON.
+async function fetchJsonViaProxyPost(targetUrl, bodyObj) {
+  const payload = JSON.stringify(bodyObj);
+  let lastError = null;
+  for (const buildProxyUrl of CORS_PROXIES_POST) {
+    const proxyUrl = buildProxyUrl(targetUrl);
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 15000);
+      const response = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        signal: controller.signal,
+      });
+      clearTimeout(id);
+      if (response.ok) {
+        const text = await response.text();
+        if (text && text.length > 50) {
+          try {
+            return JSON.parse(text);
+          } catch (e) {
+            console.warn(`POST proxy returned non-JSON: ${proxyUrl}`);
+          }
+        }
+      }
+    } catch (e) {
+      lastError = e;
+      console.warn(`POST proxy failed: ${proxyUrl}`, e.message);
+    }
+  }
+  throw new Error(`continuation 요청 실패${lastError ? ` (${lastError.message})` : ''}`);
+}
+
 // Format an ISO date string into a Korean relative label ("3일 전" etc.).
 function formatPublished(isoDate) {
   if (!isoDate) return '';
@@ -93,6 +136,148 @@ async function fetchChannelVideos(channelId) {
       };
     })
     .filter((v) => v.videoId);
+}
+
+// ---------------------------------------------------------------------------
+//  "더 보기" — older videos via YouTube's internal continuation API
+//  RSS only exposes the latest ~15 videos, so to page further back we scrape
+//  the channel /videos page once (for the first continuation token + api key),
+//  then POST to youtubei/v1/browse for each additional batch.
+// ---------------------------------------------------------------------------
+
+// Build a track object in the shape the renderer expects.
+function makeTrack(videoId, title, publishedText, channelName) {
+  return {
+    videoId,
+    title,
+    author: channelName,
+    publishedText,
+    videoThumbnails: [
+      { url: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg` },
+      { url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` },
+    ],
+  };
+}
+
+// Pull the "published" label out of a lockupViewModel's metadata rows. The
+// view-count and date parts carry no icon, so we pick the part that reads like
+// a relative date, falling back to the last part (date is listed last).
+function publishedFromLockup(meta) {
+  try {
+    const rows = meta.metadata.contentMetadataViewModel.metadataRows;
+    const texts = [];
+    for (const row of rows) {
+      for (const part of row.metadataParts || []) {
+        if (part.text && part.text.content) texts.push(part.text.content);
+      }
+    }
+    if (texts.length === 0) return '';
+    const dateLike = texts.find((t) =>
+      /전|ago|분|시간|일|주|개월|년|hour|day|week|month|year/.test(t)
+    );
+    return dateLike || texts[texts.length - 1];
+  } catch (e) {
+    return '';
+  }
+}
+
+// Recursively pull video items out of any parsed YouTube response. Handles both
+// the current lockupViewModel format (channel Videos tab) and the legacy
+// videoRenderer format, deduped by id.
+function extractTracksFromResponse(root, channelName) {
+  const out = [];
+  const seen = new Set();
+  (function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+
+    const lvm = node.lockupViewModel;
+    if (lvm && lvm.contentId && lvm.contentType === 'LOCKUP_CONTENT_TYPE_VIDEO' && !seen.has(lvm.contentId)) {
+      seen.add(lvm.contentId);
+      const meta = lvm.metadata && lvm.metadata.lockupMetadataViewModel;
+      const title = (meta && meta.title && meta.title.content) || '';
+      out.push(makeTrack(lvm.contentId, title, publishedFromLockup(meta), channelName));
+    }
+
+    const vr = node.videoRenderer;
+    if (vr && vr.videoId && !seen.has(vr.videoId)) {
+      seen.add(vr.videoId);
+      const title =
+        (vr.title && vr.title.runs && vr.title.runs[0] && vr.title.runs[0].text) ||
+        (vr.title && vr.title.simpleText) ||
+        '';
+      const published = (vr.publishedTimeText && vr.publishedTimeText.simpleText) || '';
+      out.push(makeTrack(vr.videoId, title, published, channelName));
+    }
+
+    for (const key in node) walk(node[key]);
+  })(root);
+  return out;
+}
+
+// Find the next continuation token anywhere in a parsed YouTube response.
+function findContinuationToken(node) {
+  if (!node || typeof node !== 'object') return null;
+  if (node.continuationCommand && node.continuationCommand.token) {
+    return node.continuationCommand.token;
+  }
+  for (const key in node) {
+    const token = findContinuationToken(node[key]);
+    if (token) return token;
+  }
+  return null;
+}
+
+// First page: scrape the channel /videos HTML for the initial video batch plus
+// the continuation token / api key / client version needed to page further.
+async function initMorePagination(channelId, channelName) {
+  const html = await fetchViaProxy(`https://www.youtube.com/channel/${channelId}/videos`);
+
+  const apiKey = (html.match(/"INNERTUBE_API_KEY":"([^"]+)"/) || [])[1] || null;
+  const clientVersion =
+    (html.match(/"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/) || [])[1] ||
+    (html.match(/"clientVersion":"([\d.]+)"/) || [])[1] ||
+    null;
+
+  const dataStr =
+    (html.match(/var ytInitialData\s*=\s*(\{.+?\})\s*;\s*<\/script>/s) || [])[1] ||
+    (html.match(/ytInitialData\s*=\s*(\{.+?\})\s*;\s*<\/script>/s) || [])[1] ||
+    (html.match(/window\["ytInitialData"\]\s*=\s*(\{.+?\})\s*;/s) || [])[1];
+
+  let videos = [];
+  let token = null;
+  if (dataStr) {
+    try {
+      const data = JSON.parse(dataStr);
+      videos = extractTracksFromResponse(data, channelName);
+      token = findContinuationToken(data);
+    } catch (e) {
+      console.warn('ytInitialData 파싱 실패', e);
+    }
+  }
+
+  const moreCtx = apiKey && clientVersion && token
+    ? { channelId, apiKey, clientVersion, token }
+    : null;
+  return { videos, moreCtx };
+}
+
+// Subsequent pages: POST the continuation token to the internal browse API.
+async function fetchContinuation(ctx, channelName) {
+  const url = `https://www.youtube.com/youtubei/v1/browse?key=${ctx.apiKey}`;
+  const body = {
+    context: { client: { clientName: 'WEB', clientVersion: ctx.clientVersion, hl: 'ko', gl: 'KR' } },
+    continuation: ctx.token,
+  };
+  const json = await fetchJsonViaProxyPost(url, body);
+
+  const videos = extractTracksFromResponse(json, channelName);
+  const nextToken = findContinuationToken(json);
+  const moreCtx = nextToken ? { ...ctx, token: nextToken } : null;
+  return { videos, moreCtx };
 }
 
 // Resolve arbitrary user input (UC id / URL / @handle / name) to channel info.
@@ -179,6 +364,12 @@ const state = {
   isPlaying: false,
   activeTab: 'channels',  // 'channels' or 'tracks'
   engine: null,           // 'server' (<audio>) or 'iframe' (YouTube embed)
+  // "더 보기" pagination
+  moreChannelId: null,    // channel whose list is currently loaded
+  moreChannelName: '',    // its display name (used for appended tracks)
+  moreCtx: null,          // { channelId, apiKey, clientVersion, token } | null
+  canLoadMore: false,     // whether to show the "더 보기" button
+  loadingMore: false,     // a "더 보기" fetch is in flight
 };
 
 // Personal background-playback server URL (empty = use YouTube embed fallback).
@@ -440,10 +631,18 @@ async function loadChannelVideos(channelId) {
     tracksList.innerHTML = '<div class="empty-msg"><p>영상을 불러오는 중...</p></div>';
     noTracksMsg.style.display = 'none';
 
+    // Reset pagination for the newly selected channel.
+    state.moreChannelId = channelId;
+    state.moreCtx = null;
+    state.loadingMore = false;
+    state.canLoadMore = false;
+
     const videos = await fetchChannelVideos(channelId);
 
     if (videos.length > 0) {
       state.currentPlaylist = videos;
+      state.moreChannelName = videos[0].author || '';
+      state.canLoadMore = true; // allow trying to page back further
       renderTracks();
     } else {
       tracksList.innerHTML = '<div class="empty-msg"><p>동영상이 존재하지 않습니다.</p></div>';
@@ -476,6 +675,47 @@ function renderTracks() {
     item.addEventListener('click', () => playTrack(index));
     tracksList.appendChild(item);
   });
+
+  // "더 보기" — load older videos beyond the RSS window.
+  if (state.currentPlaylist.length > 0 && state.canLoadMore) {
+    const moreBtn = document.createElement('button');
+    moreBtn.className = 'load-more-btn';
+    moreBtn.textContent = state.loadingMore ? '불러오는 중...' : '더 보기';
+    moreBtn.disabled = state.loadingMore;
+    moreBtn.addEventListener('click', loadMoreVideos);
+    tracksList.appendChild(moreBtn);
+  }
+}
+
+// Fetch the next batch of older videos and append them to the current list.
+async function loadMoreVideos() {
+  if (state.loadingMore || !state.canLoadMore) return;
+  state.loadingMore = true;
+  renderTracks();
+
+  try {
+    const channelName = state.moreChannelName || state.currentPlaylist[0]?.author || '';
+    const result = state.moreCtx
+      ? await fetchContinuation(state.moreCtx, channelName)
+      : await initMorePagination(state.moreChannelId, channelName);
+
+    // Append only videos we don't already have (RSS/earlier pages overlap).
+    const existing = new Set(state.currentPlaylist.map((v) => v.videoId));
+    const fresh = result.videos.filter((v) => v.videoId && !existing.has(v.videoId));
+    state.currentPlaylist.push(...fresh);
+
+    state.moreCtx = result.moreCtx;
+    // No further token (or nothing new arrived) → we've reached the end.
+    if (!result.moreCtx || (fresh.length === 0 && !result.moreCtx.token)) {
+      state.canLoadMore = false;
+    }
+  } catch (e) {
+    console.error('더 보기 실패', e);
+    alert('영상을 더 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.');
+  } finally {
+    state.loadingMore = false;
+    renderTracks();
+  }
 }
 
 // ============================================================================
