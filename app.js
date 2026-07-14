@@ -330,14 +330,30 @@ async function resolveChannel(input) {
     console.warn('RSS 채널명 조회 실패 — HTML 값으로 대체', e);
   }
 
-  // 4) If we scraped the page, enrich name/avatar from it (avatar isn't in RSS).
+  // 4) Fetch the channel page (if we didn't already) to grab the avatar — RSS
+  //    has no avatar. Best-effort: a failure here must NOT fail the add; the UI
+  //    falls back to a generated letter avatar.
+  if (!html) {
+    try {
+      html = await fetchViaProxy(`https://www.youtube.com/channel/${authorId}`);
+    } catch (e) {
+      console.warn('아바타용 채널 페이지 조회 실패 — 아바타 없이 진행', e);
+    }
+  }
   if (html) {
-    const rawName =
-      (html.match(/<meta property="og:title" content="([^"]+)"/) || [])[1] ||
-      (html.match(/"title":"([^"]+)","navigationEndpoint"/) || [])[1];
-    if (rawName) author = decodeHtmlEntities(rawName);
+    // Only override the RSS name if RSS didn't give us one.
+    if (author === query) {
+      const rawName =
+        (html.match(/<meta property="og:title" content="([^"]+)"/) || [])[1] ||
+        (html.match(/"title":"([^"]+)","navigationEndpoint"/) || [])[1];
+      if (rawName) author = decodeHtmlEntities(rawName);
+    }
 
-    const avatarRaw = (html.match(/"avatar":\{"thumbnails":\[\{"url":"([^"]+)"/) || [])[1];
+    // og:image is the channel avatar and is a clean absolute URL; the escaped
+    // "avatar" JSON is a fallback for layouts without the meta tag.
+    const avatarRaw =
+      (html.match(/<meta property="og:image" content="([^"]+)"/) || [])[1] ||
+      (html.match(/"avatar":\{"thumbnails":\[\{"url":"([^"]+)"/) || [])[1];
     if (avatarRaw) {
       authorThumbnails = [{ url: avatarRaw.replace(/\\u002F/gi, '/').replace(/\\\//g, '/') }];
     }
@@ -542,6 +558,39 @@ function formatTime(seconds) {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
+// A circular SVG data-URI avatar showing the channel's first letter. Used when
+// a channel has no thumbnail or its remote image fails to load.
+function letterAvatar(name) {
+  const first = ((name || '?').trim().charAt(0) || '?').toUpperCase();
+  const ch = first.replace(/[&<>"']/g, '') || '?';
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56">' +
+    '<rect width="56" height="56" rx="28" fill="#242739"/>' +
+    '<text x="28" y="28" dy="0.35em" text-anchor="middle" ' +
+    'font-family="Outfit, sans-serif" font-size="26" font-weight="700" fill="#ff2d73">' +
+    ch +
+    '</text></svg>';
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+// Build a channel avatar <img> that falls back to a letter avatar on load error.
+function makeAvatarImg(channel) {
+  const img = document.createElement('img');
+  img.alt = channel.author || '';
+  img.referrerPolicy = 'no-referrer';
+  const fallback = letterAvatar(channel.author);
+  img.onerror = () => {
+    img.onerror = null;
+    img.src = fallback;
+  };
+  const url =
+    channel.authorThumbnails && channel.authorThumbnails.length
+      ? channel.authorThumbnails[channel.authorThumbnails.length - 1].url
+      : null;
+  img.src = url || fallback;
+  return img;
+}
+
 // ============================================================================
 //  Subscribed channels (LocalStorage)
 // ============================================================================
@@ -585,37 +634,39 @@ function updateChannelsUI() {
     noChannelsMsg.style.display = 'none';
 
     state.subscribedChannels.forEach((channel) => {
-      const thumb = channel.authorThumbnails
-        ? channel.authorThumbnails[channel.authorThumbnails.length - 1].url
-        : 'https://images.unsplash.com/photo-1614680376593-902f74fa0d41?w=100';
-
       // Main UI channel card
       const card = document.createElement('div');
       card.className = 'channel-card';
-      card.innerHTML = `
-        <img src="${thumb}" alt="${channel.author}" referrerpolicy="no-referrer">
-        <h4>${channel.author}</h4>
-      `;
+      const cardName = document.createElement('h4');
+      cardName.textContent = channel.author;
+      card.appendChild(makeAvatarImg(channel));
+      card.appendChild(cardName);
       card.addEventListener('click', () => loadChannelVideos(channel.authorId));
       channelsList.appendChild(card);
 
       // Settings modal list item
       const li = document.createElement('li');
-      li.innerHTML = `
-        <div class="settings-ch-info">
-          <img src="${thumb}" alt="${channel.author}" referrerpolicy="no-referrer">
-          <span class="settings-ch-name">${channel.author}</span>
-        </div>
-        <button class="delete-btn" aria-label="삭제">
-          <i data-lucide="trash-2"></i>
-        </button>
-      `;
-      li.querySelector('.delete-btn').addEventListener('click', () => {
+      const info = document.createElement('div');
+      info.className = 'settings-ch-info';
+      const infoName = document.createElement('span');
+      infoName.className = 'settings-ch-name';
+      infoName.textContent = channel.author;
+      info.appendChild(makeAvatarImg(channel));
+      info.appendChild(infoName);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'delete-btn';
+      delBtn.setAttribute('aria-label', '삭제');
+      delBtn.innerHTML = '<i data-lucide="trash-2"></i>';
+      delBtn.addEventListener('click', () => {
         state.subscribedChannels = state.subscribedChannels.filter(
           (c) => c.authorId !== channel.authorId
         );
         saveSubscribedChannels();
       });
+
+      li.appendChild(info);
+      li.appendChild(delBtn);
       settingsChannelsList.appendChild(li);
     });
   }
