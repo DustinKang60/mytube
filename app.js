@@ -387,6 +387,8 @@ const state = {
   canLoadMore: false,     // whether to show the "더 보기" button
   loadingMore: false,     // a "더 보기" fetch is in flight
   resumeOnReturn: false,  // was playing when backgrounded → resume on return
+  expectedVideoId: null,  // the videoId we asked the iframe player to play
+  lastLoadAt: 0,          // when we last called loadVideoById (drift-guard debounce)
 };
 
 // Personal background-playback server URL (empty = use YouTube embed fallback).
@@ -454,6 +456,7 @@ window.onYouTubeIframeAPIReady = function () {
         if (pendingVideoId) {
           const id = pendingVideoId;
           pendingVideoId = null;
+          state.lastLoadAt = Date.now();
           ytPlayer.loadVideoById(id);
         }
       },
@@ -468,6 +471,25 @@ function onPlayerStateChange(e) {
   if (e.data === YT.PlayerState.ENDED) {
     nextTrack();
   } else if (e.data === YT.PlayerState.PLAYING) {
+    // Drift guard: if YouTube auto-started a video we never requested — e.g. a
+    // "recommended" clip from another channel after ours ended, or an autoplay
+    // the ENDED handler missed — snap back to our own queue instead of letting
+    // an unrelated channel take over. (Pre-roll ads keep our content's video_id,
+    // so this doesn't misfire during ads; the debounce ignores load transitions.)
+    const vd = ytPlayer && ytPlayer.getVideoData ? ytPlayer.getVideoData() : null;
+    const playingId = vd && vd.video_id;
+    if (
+      state.engine === 'iframe' &&
+      playingId &&
+      state.expectedVideoId &&
+      playingId !== state.expectedVideoId &&
+      Date.now() - state.lastLoadAt > 1500
+    ) {
+      console.warn('요청하지 않은 영상 자동재생 감지 → 다음 곡으로 교정:', playingId);
+      nextTrack();
+      return;
+    }
+
     state.isPlaying = true;
     updatePlayButton();
     startProgressTimer();
@@ -819,11 +841,13 @@ function playViaIframe(track) {
     audioPlayer.load();
   } catch (e) { /* ignore */ }
 
+  state.expectedVideoId = track.videoId;
   if (!ytReady || !ytPlayer) {
     trackTitle.textContent = '플레이어 로딩 중... ' + track.title;
     pendingVideoId = track.videoId;
     return;
   }
+  state.lastLoadAt = Date.now();
   ytPlayer.loadVideoById(track.videoId); // auto-plays
 }
 
