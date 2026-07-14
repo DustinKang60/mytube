@@ -386,6 +386,7 @@ const state = {
   moreCtx: null,          // { channelId, apiKey, clientVersion, token } | null
   canLoadMore: false,     // whether to show the "더 보기" button
   loadingMore: false,     // a "더 보기" fetch is in flight
+  resumeOnReturn: false,  // was playing when backgrounded → resume on return
 };
 
 // Personal background-playback server URL (empty = use YouTube embed fallback).
@@ -911,6 +912,21 @@ progressBarContainer.addEventListener('click', (e) => {
 
 prevBtn.addEventListener('click', prevTrack);
 nextBtn.addEventListener('click', nextTrack);
+
+// Auto-resume: the YouTube embed pauses itself when the app is backgrounded
+// (e.g. the overview/square button). Remember that we were playing and resume
+// when the app returns to the foreground, so it picks up where it left off.
+// (visibilitychange → 'hidden' fires before the embed's own pause event, so
+//  state.isPlaying still reflects the user's intent at that moment.)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    state.resumeOnReturn = state.isPlaying;
+  } else if (document.visibilityState === 'visible') {
+    if (state.resumeOnReturn && !state.isPlaying && state.currentTrackIndex >= 0) {
+      resumePlayback();
+    }
+  }
+});
 
 // ============================================================================
 //  Tabs
