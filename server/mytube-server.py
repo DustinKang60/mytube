@@ -15,13 +15,17 @@ Run:
     PORT=9000 python mytube-server.py  # custom port
 
 Endpoints:
-    GET /health           -> {"ok": true}
-    GET /audio/<videoId>  -> audio/mp4 stream (supports Range)
+    GET  /health          -> {"ok": true}
+    GET  /audio/<videoId> -> audio/mp4 stream (supports Range)
+    POST /browse          -> proxies YouTube's continuation API so the app's
+                             "더 보기" list can page past the first ~30 videos
+                             (body: {apiKey, clientVersion, continuation})
 """
 
 import os
 import re
 import sys
+import json
 import time
 import socketserver
 import subprocess
@@ -73,7 +77,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Range")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Range, Content-Type")
         self.send_header("Access-Control-Expose-Headers",
                          "Content-Range, Accept-Ranges, Content-Length")
 
@@ -91,6 +96,58 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def do_POST(self):
+        # Proxy YouTube's internal continuation API (POST-only, JSON) so the app
+        # can page past the first ~30 videos in the "더 보기" list. Browsers and
+        # public CORS proxies can't do this POST (preflight + YouTube rejects it
+        # from datacenter IPs); this server can, from its residential IP.
+        if urlparse(self.path).path != "/browse":
+            self._simple(404, b"not found")
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            req = json.loads(raw or b"{}")
+        except Exception:
+            self._simple(400, b"bad json")
+            return
+
+        api_key = req.get("apiKey", "") or ""
+        continuation = req.get("continuation", "") or ""
+        client_version = req.get("clientVersion", "") or "2.20240101.00.00"
+        if not continuation or not re.match(r"^[A-Za-z0-9_-]+$", api_key):
+            self._simple(400, b"missing/invalid params")
+            return
+
+        yt_url = "https://www.youtube.com/youtubei/v1/browse?key=" + api_key
+        payload = json.dumps({
+            "context": {"client": {"clientName": "WEB",
+                                   "clientVersion": client_version,
+                                   "hl": "ko", "gl": "KR"}},
+            "continuation": continuation,
+        }).encode()
+        try:
+            r = urllib.request.urlopen(
+                urllib.request.Request(
+                    yt_url, data=payload,
+                    headers={"Content-Type": "application/json", "User-Agent": UA}),
+                timeout=30)
+            data = r.read()
+        except Exception as e:
+            self._simple(502, ("browse error: %s" % e).encode())
+            return
+
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_GET(self):
         path = urlparse(self.path).path

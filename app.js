@@ -266,13 +266,33 @@ async function initMorePagination(channelId, channelName) {
 }
 
 // Subsequent pages: POST the continuation token to the internal browse API.
+// YouTube only answers this POST with an application/json body, which forces a
+// CORS preflight that public proxies don't handle — so it only works through a
+// personal server (residential IP, own CORS). Without a server this throws and
+// the caller stops paginating cleanly.
 async function fetchContinuation(ctx, channelName) {
-  const url = `https://www.youtube.com/youtubei/v1/browse?key=${ctx.apiKey}`;
-  const body = {
-    context: { client: { clientName: 'WEB', clientVersion: ctx.clientVersion, hl: 'ko', gl: 'KR' } },
-    continuation: ctx.token,
-  };
-  const json = await fetchJsonViaProxyPost(url, body);
+  const server = getServerUrl();
+  let json;
+  if (server) {
+    const r = await fetch(`${server}/browse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiKey: ctx.apiKey,
+        clientVersion: ctx.clientVersion,
+        continuation: ctx.token,
+      }),
+    });
+    if (!r.ok) throw new Error(`서버 /browse 응답 ${r.status}`);
+    json = await r.json();
+  } else {
+    const url = `https://www.youtube.com/youtubei/v1/browse?key=${ctx.apiKey}`;
+    const body = {
+      context: { client: { clientName: 'WEB', clientVersion: ctx.clientVersion, hl: 'ko', gl: 'KR' } },
+      continuation: ctx.token,
+    };
+    json = await fetchJsonViaProxyPost(url, body);
+  }
 
   const videos = extractTracksFromResponse(json, channelName);
   const nextToken = findContinuationToken(json);
@@ -779,13 +799,20 @@ async function loadMoreVideos() {
     state.currentPlaylist.push(...fresh);
 
     state.moreCtx = result.moreCtx;
-    // No further token (or nothing new arrived) → we've reached the end.
-    if (!result.moreCtx || (fresh.length === 0 && !result.moreCtx.token)) {
+    // Stop paginating when: no further token, nothing new arrived, or there is
+    // no personal server (further pages need the youtubei POST it proxies).
+    if (!result.moreCtx || !result.moreCtx.token || fresh.length === 0 || !getServerUrl()) {
       state.canLoadMore = false;
     }
   } catch (e) {
     console.error('더 보기 실패', e);
-    alert('영상을 더 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.');
+    if (getServerUrl()) {
+      // Server is configured but the request failed → worth telling the user.
+      alert('영상을 더 불러오지 못했습니다. 백그라운드 재생 서버 상태를 확인해 주세요.');
+    }
+    // No server: public proxies can't do the continuation POST — stop quietly
+    // (the first batch of ~30 videos is already shown).
+    state.canLoadMore = false;
   } finally {
     state.loadingMore = false;
     renderTracks();
