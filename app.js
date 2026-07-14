@@ -95,40 +95,68 @@ async function fetchChannelVideos(channelId) {
     .filter((v) => v.videoId);
 }
 
-// Resolve arbitrary user input (UC id / URL / @handle / name) to channel info by
-// scraping the public channel page HTML through the proxy.
+// Resolve arbitrary user input (UC id / URL / @handle / name) to channel info.
+//
+// A channel ID (UC...) is resolved through the YouTube RSS feed — the same small,
+// reliable endpoint the video list uses — so pasting an ID always works. Only
+// handles / custom URLs / names require scraping the (large, flaky) channel page
+// to discover the ID first; we then confirm the name via RSS as well.
 async function resolveChannel(input) {
   const query = input.trim();
+  if (!query) throw new Error('채널 ID 또는 URL을 입력하세요.');
 
-  let targetUrl;
-  const ucMatch = query.match(/(UC[0-9A-Za-z_-]{22})/);
-  if (query.startsWith('http')) {
-    targetUrl = query;
-  } else if (ucMatch && ucMatch[1] === query) {
-    targetUrl = `https://www.youtube.com/channel/${ucMatch[1]}`;
-  } else {
-    const handle = query.startsWith('@') ? query : `@${query.replace(/^@/, '')}`;
-    targetUrl = `https://www.youtube.com/${handle}`;
+  // 1) Pull a channel ID straight out of the input if one is present
+  //    (raw "UC..." or a "/channel/UC..." URL).
+  let authorId = (query.match(/(UC[0-9A-Za-z_-]{22})/) || [])[1] || null;
+
+  // 2) No direct ID → scrape the channel page to discover it.
+  let html = null;
+  if (!authorId) {
+    let targetUrl;
+    if (query.startsWith('http')) {
+      targetUrl = query;
+    } else {
+      const handle = query.startsWith('@') ? query : `@${query.replace(/^@/, '')}`;
+      targetUrl = `https://www.youtube.com/${handle}`;
+    }
+
+    html = await fetchViaProxy(targetUrl);
+    authorId =
+      (html.match(/"(?:externalId|channelId)":"(UC[0-9A-Za-z_-]{22})"/) || [])[1] ||
+      (html.match(/channel_id=(UC[0-9A-Za-z_-]{22})/) || [])[1] ||
+      (html.match(/\/channel\/(UC[0-9A-Za-z_-]{22})/) || [])[1] ||
+      null;
+    if (!authorId) {
+      throw new Error('채널 ID를 찾지 못했습니다. 채널 ID(UC...)를 직접 입력해 보세요.');
+    }
   }
 
-  const html = await fetchViaProxy(targetUrl);
+  // 3) Get the channel name (and verify the channel exists) via the RSS feed.
+  let author = query;
+  let authorThumbnails = null;
+  try {
+    const feedXml = await fetchViaProxy(
+      `https://www.youtube.com/feeds/videos.xml?channel_id=${authorId}`
+    );
+    const doc = new DOMParser().parseFromString(feedXml, 'application/xml');
+    const rssName = doc.querySelector('feed > author > name')?.textContent;
+    if (rssName) author = rssName;
+  } catch (e) {
+    console.warn('RSS 채널명 조회 실패 — HTML 값으로 대체', e);
+  }
 
-  const authorId =
-    (html.match(/"(?:externalId|channelId)":"(UC[0-9A-Za-z_-]{22})"/) || [])[1] ||
-    (html.match(/channel_id=(UC[0-9A-Za-z_-]{22})/) || [])[1] ||
-    (ucMatch ? ucMatch[1] : null);
-  if (!authorId) throw new Error('채널 ID를 찾을 수 없습니다.');
+  // 4) If we scraped the page, enrich name/avatar from it (avatar isn't in RSS).
+  if (html) {
+    const rawName =
+      (html.match(/<meta property="og:title" content="([^"]+)"/) || [])[1] ||
+      (html.match(/"title":"([^"]+)","navigationEndpoint"/) || [])[1];
+    if (rawName) author = decodeHtmlEntities(rawName);
 
-  const rawName =
-    (html.match(/<meta property="og:title" content="([^"]+)"/) || [])[1] ||
-    (html.match(/"title":"([^"]+)","navigationEndpoint"/) || [])[1] ||
-    query;
-  const author = decodeHtmlEntities(rawName);
-
-  const avatarRaw = (html.match(/"avatar":\{"thumbnails":\[\{"url":"([^"]+)"/) || [])[1];
-  const authorThumbnails = avatarRaw
-    ? [{ url: avatarRaw.replace(/\\u002F/gi, '/').replace(/\\\//g, '/') }]
-    : null;
+    const avatarRaw = (html.match(/"avatar":\{"thumbnails":\[\{"url":"([^"]+)"/) || [])[1];
+    if (avatarRaw) {
+      authorThumbnails = [{ url: avatarRaw.replace(/\\u002F/gi, '/').replace(/\\\//g, '/') }];
+    }
+  }
 
   return { authorId, author, authorThumbnails };
 }
@@ -653,7 +681,7 @@ addChannelBtn.addEventListener('click', async () => {
     }
   } catch (err) {
     console.error(err);
-    alert('채널 정보 탐색 실패. 채널 ID(UC...)나 채널 URL을 입력해 보세요.');
+    alert(`채널 정보 탐색 실패: ${err.message}\n\n채널 ID(UC...)를 직접 입력하면 가장 확실합니다.`);
   } finally {
     addChannelBtn.disabled = false;
     addChannelBtn.textContent = '추가';
