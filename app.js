@@ -614,16 +614,85 @@ audioPlayer.addEventListener('timeupdate', () => {
   }
 });
 
-// Server unreachable / stream failed → fall back to the YouTube embed.
+// Stream dropped (e.g. Cloudflare Quick Tunnel resets long-lived connections
+// every few minutes) → try to reconnect and resume from where we left off
+// before giving up and falling back to the YouTube embed.
 audioPlayer.addEventListener('error', () => {
   if (state.engine !== 'server') return; // ignore errors from clearing src
-  console.warn('Server playback failed — falling back to YouTube embed.');
-  const track = state.currentPlaylist[state.currentTrackIndex];
-  if (track) {
-    trackTitle.textContent = '서버 재생 실패 — 유튜브로 전환 중...';
-    playViaIframe(track);
-  }
+  console.warn('Server playback failed — attempting reconnect.');
+  reconnectServerStream();
 });
+
+// ============================================================================
+//  Server-stream reconnect
+//  Cloudflare Quick Tunnel (the free trycloudflare.com tunnel) resets
+//  long-lived connections every few minutes ("stream N canceled by remote"
+//  in the tunnel log) — not a yt-dlp/audio problem. A watchdog checks that
+//  currentTime is actually advancing; if it stalls, or the <audio> element
+//  fires 'error', we reload the same URL and seek back to where playback
+//  stopped. After too many failed attempts in a row we give up and fall back
+//  to the YouTube embed instead of looping forever.
+// ============================================================================
+const SERVER_MAX_RECONNECTS = 5;
+const SERVER_STALL_TIMEOUT_MS = 8000;
+let serverReconnectAttempts = 0;
+let serverWatchdogTimer = null;
+let watchdogLastTime = 0;
+let watchdogLastProgressAt = 0;
+
+function startServerWatchdog() {
+  serverReconnectAttempts = 0;
+  watchdogLastTime = 0;
+  watchdogLastProgressAt = Date.now();
+  clearInterval(serverWatchdogTimer);
+  serverWatchdogTimer = setInterval(() => {
+    if (state.engine !== 'server' || !state.isPlaying) return;
+    const cur = audioPlayer.currentTime || 0;
+    if (cur > watchdogLastTime + 0.25) {
+      watchdogLastTime = cur;
+      watchdogLastProgressAt = Date.now();
+      serverReconnectAttempts = 0; // healthy progress — reset the backoff
+      return;
+    }
+    if (Date.now() - watchdogLastProgressAt > SERVER_STALL_TIMEOUT_MS) {
+      console.warn('서버 스트림 정체 감지 — 재연결 시도');
+      reconnectServerStream();
+    }
+  }, 2000);
+}
+
+function stopServerWatchdog() {
+  clearInterval(serverWatchdogTimer);
+  serverWatchdogTimer = null;
+}
+
+// Reload the current track's stream from the server and resume at the
+// position we stalled at, instead of restarting the track or bailing to the
+// embed on the very first hiccup.
+function reconnectServerStream() {
+  const track = state.currentPlaylist[state.currentTrackIndex];
+  if (!track || state.engine !== 'server') return;
+
+  serverReconnectAttempts++;
+  if (serverReconnectAttempts > SERVER_MAX_RECONNECTS) {
+    console.warn('서버 재연결 한도 초과 — 유튜브 임베드로 전환');
+    stopServerWatchdog();
+    trackTitle.textContent = '서버 연결 불안정 — 유튜브로 전환 중...';
+    playViaIframe(track);
+    return;
+  }
+
+  const resumeAt = audioPlayer.currentTime || 0;
+  const wasPlaying = state.isPlaying;
+  const onResumed = () => {
+    audioPlayer.removeEventListener('loadedmetadata', onResumed);
+    if (resumeAt > 0) audioPlayer.currentTime = resumeAt;
+    if (wasPlaying) audioPlayer.play().catch((err) => console.warn('reconnect play() rejected:', err));
+  };
+  audioPlayer.addEventListener('loadedmetadata', onResumed);
+  audioPlayer.src = `${getServerUrl()}/audio/${track.videoId}`;
+  audioPlayer.load();
+}
 
 // ============================================================================
 //  Helpers
@@ -894,6 +963,7 @@ function playViaServer(track) {
     if (ytPlayer && ytReady) ytPlayer.stopVideo();
   } catch (e) { /* ignore */ }
 
+  startServerWatchdog();
   audioPlayer.src = `${getServerUrl()}/audio/${track.videoId}`;
   audioPlayer.load();
   audioPlayer.play().catch((err) => console.warn('audio play() rejected:', err));
@@ -902,6 +972,7 @@ function playViaServer(track) {
 // Play through the hidden YouTube IFrame player (no-setup fallback).
 function playViaIframe(track) {
   state.engine = 'iframe';
+  stopServerWatchdog();
   try {
     audioPlayer.pause();
     audioPlayer.removeAttribute('src');
