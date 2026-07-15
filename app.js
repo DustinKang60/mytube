@@ -635,18 +635,26 @@ audioPlayer.addEventListener('error', () => {
 // ============================================================================
 const SERVER_MAX_RECONNECTS = 5;
 const SERVER_STALL_TIMEOUT_MS = 8000;
+const RECONNECT_GIVEUP_MS = 20000; // a single reconnect gets this long to recover
 let serverReconnectAttempts = 0;
 let serverWatchdogTimer = null;
 let watchdogLastTime = 0;
 let watchdogLastProgressAt = 0;
+let serverReconnecting = false;     // a reload is in flight — don't stack another
+let reconnectGiveupTimer = null;
 
 function startServerWatchdog() {
   serverReconnectAttempts = 0;
   watchdogLastTime = 0;
   watchdogLastProgressAt = Date.now();
+  serverReconnecting = false;
+  clearTimeout(reconnectGiveupTimer);
   clearInterval(serverWatchdogTimer);
   serverWatchdogTimer = setInterval(() => {
     if (state.engine !== 'server' || !state.isPlaying) return;
+    // While a reload is in flight, currentTime naturally sits still — leave the
+    // reconnect alone to recover instead of piling on more attempts.
+    if (serverReconnecting) return;
     const cur = audioPlayer.currentTime || 0;
     if (cur > watchdogLastTime + 0.25) {
       watchdogLastTime = cur;
@@ -664,14 +672,18 @@ function startServerWatchdog() {
 function stopServerWatchdog() {
   clearInterval(serverWatchdogTimer);
   serverWatchdogTimer = null;
+  clearTimeout(reconnectGiveupTimer);
+  serverReconnecting = false;
 }
 
 // Reload the current track's stream from the server and resume at the
 // position we stalled at, instead of restarting the track or bailing to the
-// embed on the very first hiccup.
+// embed on the very first hiccup. Only one reconnect runs at a time; the
+// watchdog is held off (serverReconnecting) until this one resolves so a slow
+// reload isn't mistaken for a fresh stall and doesn't burn extra attempts.
 function reconnectServerStream() {
   const track = state.currentPlaylist[state.currentTrackIndex];
-  if (!track || state.engine !== 'server') return;
+  if (!track || state.engine !== 'server' || serverReconnecting) return;
 
   serverReconnectAttempts++;
   if (serverReconnectAttempts > SERVER_MAX_RECONNECTS) {
@@ -682,13 +694,34 @@ function reconnectServerStream() {
     return;
   }
 
+  serverReconnecting = true;
   const resumeAt = audioPlayer.currentTime || 0;
   const wasPlaying = state.isPlaying;
-  const onResumed = () => {
+
+  // Reconnect finished (or aborted) — re-arm the watchdog from "now" so it
+  // measures the *next* stall, not the time spent reloading.
+  const finish = () => {
     audioPlayer.removeEventListener('loadedmetadata', onResumed);
-    if (resumeAt > 0) audioPlayer.currentTime = resumeAt;
-    if (wasPlaying) audioPlayer.play().catch((err) => console.warn('reconnect play() rejected:', err));
+    clearTimeout(reconnectGiveupTimer);
+    serverReconnecting = false;
+    watchdogLastTime = audioPlayer.currentTime || 0;
+    watchdogLastProgressAt = Date.now();
   };
+  const onResumed = () => {
+    if (resumeAt > 0) {
+      try { audioPlayer.currentTime = resumeAt; } catch (e) { /* ignore */ }
+    }
+    if (wasPlaying) audioPlayer.play().catch((err) => console.warn('reconnect play() rejected:', err));
+    finish();
+  };
+
+  // If the reload never produces metadata (server truly unreachable), release
+  // the hold so the watchdog can try again / eventually fall back to the embed.
+  reconnectGiveupTimer = setTimeout(() => {
+    console.warn('재연결 응답 없음 — 다시 시도');
+    finish();
+  }, RECONNECT_GIVEUP_MS);
+
   audioPlayer.addEventListener('loadedmetadata', onResumed);
   audioPlayer.src = `${getServerUrl()}/audio/${track.videoId}`;
   audioPlayer.load();
