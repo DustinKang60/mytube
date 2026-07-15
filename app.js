@@ -439,9 +439,19 @@ const state = {
   lastLoadAt: 0,          // when we last called loadVideoById (drift-guard debounce)
 };
 
+// Normalize a pasted server address. A tunnel address is usually copied without
+// a scheme ("xxx.trycloudflare.com"); without one every `${server}/audio/...`
+// URL resolves *relative to this page*, 404s, and silently falls back to the
+// ad-playing YouTube embed — so always force an absolute https:// URL.
+function normalizeServerUrl(raw) {
+  const url = (raw || '').trim().replace(/\/+$/, '');
+  if (!url) return '';
+  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
+}
+
 // Personal background-playback server URL (empty = use YouTube embed fallback).
 function getServerUrl() {
-  return (localStorage.getItem('mytube_server_url') || '').trim().replace(/\/+$/, '');
+  return normalizeServerUrl(localStorage.getItem('mytube_server_url'));
 }
 
 // ============================================================================
@@ -1078,8 +1088,9 @@ addChannelBtn.addEventListener('click', async () => {
 
 // Save / test the personal background-playback server URL
 saveServerBtn.addEventListener('click', async () => {
-  const url = serverUrlInput.value.trim().replace(/\/+$/, '');
+  const url = normalizeServerUrl(serverUrlInput.value);
   localStorage.setItem('mytube_server_url', url);
+  serverUrlInput.value = url; // show the user the address we actually saved
 
   if (!url) {
     serverStatus.textContent = '서버 없음 — 유튜브 임베드로 재생합니다.';
