@@ -600,7 +600,18 @@ audioPlayer.addEventListener('pause', () => {
 });
 
 audioPlayer.addEventListener('ended', () => {
-  if (state.engine === 'server') nextTrack();
+  if (state.engine !== 'server') return;
+  // A tunnel drop can look like a normal end-of-media (the truncated stream is
+  // reported as "finished"). If we're nowhere near the real duration, it's a
+  // dropped connection, not the end of the track → reconnect and resume.
+  const cur = audioPlayer.currentTime || 0;
+  const dur = audioPlayer.duration || 0;
+  if (dur > 0 && cur < dur - 2) {
+    console.warn('스트림이 끝나기 전에 종료됨 — 재연결 시도');
+    reconnectServerStream();
+  } else {
+    nextTrack();
+  }
 });
 
 audioPlayer.addEventListener('timeupdate', () => {
@@ -614,12 +625,37 @@ audioPlayer.addEventListener('timeupdate', () => {
   }
 });
 
-// Stream dropped (e.g. Cloudflare Quick Tunnel resets long-lived connections
-// every few minutes) → try to reconnect and resume from where we left off
-// before giving up and falling back to the YouTube embed.
+// Playback (re)started — event-driven, so it fires even with the screen off.
+// Use it to clear the reconnect backoff: any healthy resume means the last
+// reconnect worked, so the next drop starts counting fresh.
+audioPlayer.addEventListener('playing', () => {
+  if (state.engine !== 'server') return;
+  serverReconnectAttempts = 0;
+  watchdogLastTime = audioPlayer.currentTime || 0;
+  watchdogLastProgressAt = Date.now();
+});
+
+// ============================================================================
+//  Stream-drop detection (background-safe)
+//  The whole point of this app is screen-off playback, but mobile browsers
+//  FREEZE setInterval/setTimeout when the screen is off — so the interval
+//  watchdog below can't catch a mid-playback tunnel drop in the background.
+//  These media events, by contrast, are event-driven and still fire with the
+//  screen off, so they're the primary trigger for reconnecting; the interval
+//  watchdog is just a foreground backup.
+//    error   → hard network/decode failure
+//    stalled → the browser is fetching but data stopped arriving (a drop)
+//  Cloudflare's "stream N canceled by remote" surfaces as one of these.
+// ============================================================================
 audioPlayer.addEventListener('error', () => {
   if (state.engine !== 'server') return; // ignore errors from clearing src
-  console.warn('Server playback failed — attempting reconnect.');
+  console.warn('서버 재생 오류 — 재연결 시도');
+  reconnectServerStream();
+});
+
+audioPlayer.addEventListener('stalled', () => {
+  if (state.engine !== 'server' || !state.isPlaying) return;
+  console.warn('서버 스트림 정체(stalled) — 재연결 시도');
   reconnectServerStream();
 });
 
