@@ -813,6 +813,7 @@ function updateChannelsUI() {
           (c) => c.authorId !== channel.authorId
         );
         saveSubscribedChannels();
+        deleteCachedChannel(channel.authorId);
       });
 
       li.appendChild(info);
@@ -824,34 +825,98 @@ function updateChannelsUI() {
 }
 
 // ============================================================================
+//  Channel video-list cache (LocalStorage)
+//  A channel's RSS list rarely changes more than once a day, so re-scraping
+//  YouTube through the proxy/server on every single app open is wasted work.
+//  Cache each channel's list on the phone and only hit the network again once
+//  the cache goes stale — the cached copy still renders instantly either way.
+// ============================================================================
+const CHANNEL_CACHE_KEY = 'mytube_channel_cache';
+const CHANNEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h — comfortably under "a day"
+
+function loadChannelCache() {
+  try {
+    return JSON.parse(localStorage.getItem(CHANNEL_CACHE_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+
+function getCachedChannel(channelId) {
+  return loadChannelCache()[channelId] || null;
+}
+
+function setCachedChannel(channelId, videos) {
+  const cache = loadChannelCache();
+  cache[channelId] = { videos, fetchedAt: Date.now() };
+  try {
+    localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(cache));
+  } catch (e) {
+    console.warn('채널 캐시 저장 실패', e);
+  }
+}
+
+function deleteCachedChannel(channelId) {
+  const cache = loadChannelCache();
+  if (channelId in cache) {
+    delete cache[channelId];
+    localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(cache));
+  }
+}
+
+// ============================================================================
 //  Playlist / tracks
 // ============================================================================
+// Cache-first: a cached list (any age) renders immediately with no network
+// wait. A background refresh only actually hits the network when the cache
+// is missing or older than CHANNEL_CACHE_TTL_MS, and silently updates the
+// list in place if it's still the channel the user is looking at.
 async function loadChannelVideos(channelId) {
-  try {
-    switchTab('tracks');
+  switchTab('tracks');
+
+  // Reset pagination for the newly selected channel.
+  state.moreChannelId = channelId;
+  state.moreCtx = null;
+  state.loadingMore = false;
+  state.canLoadMore = false;
+
+  const cached = getCachedChannel(channelId);
+  if (cached) {
+    state.currentPlaylist = cached.videos;
+    state.moreChannelName = cached.videos[0]?.author || '';
+    state.canLoadMore = true;
+    renderTracks();
+  } else {
     tracksList.innerHTML = '<div class="empty-msg"><p>영상을 불러오는 중...</p></div>';
     noTracksMsg.style.display = 'none';
+  }
 
-    // Reset pagination for the newly selected channel.
-    state.moreChannelId = channelId;
-    state.moreCtx = null;
-    state.loadingMore = false;
-    state.canLoadMore = false;
+  const isFresh = cached && Date.now() - cached.fetchedAt < CHANNEL_CACHE_TTL_MS;
+  if (isFresh) return; // cache young enough — skip the network round trip entirely
 
+  try {
     const videos = await fetchChannelVideos(channelId);
-
     if (videos.length > 0) {
-      state.currentPlaylist = videos;
-      state.moreChannelName = videos[0].author || '';
-      state.canLoadMore = true; // allow trying to page back further
-      renderTracks();
-    } else {
+      setCachedChannel(channelId, videos);
+      // The user may have switched channels while this was in flight.
+      if (state.moreChannelId === channelId) {
+        state.currentPlaylist = videos;
+        state.moreChannelName = videos[0].author || '';
+        state.canLoadMore = true;
+        renderTracks();
+      }
+    } else if (!cached) {
       tracksList.innerHTML = '<div class="empty-msg"><p>동영상이 존재하지 않습니다.</p></div>';
     }
   } catch (e) {
     console.error(e);
-    tracksList.innerHTML =
-      '<div class="empty-msg"><p>목록을 가져오지 못했습니다. 다시 시도해 주세요.</p></div>';
+    // A cached list is already on screen — a failed background refresh
+    // shouldn't rip it away, so only show the error state when there was
+    // nothing to fall back on.
+    if (!cached) {
+      tracksList.innerHTML =
+        '<div class="empty-msg"><p>목록을 가져오지 못했습니다. 다시 시도해 주세요.</p></div>';
+    }
   }
 }
 
