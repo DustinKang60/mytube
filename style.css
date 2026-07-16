@@ -237,6 +237,26 @@ body {
   background: rgba(255, 255, 255, 0.05);
 }
 
+/* Repeat toggle: lit when the playlist keeps going, dimmed when playback
+   stops after the current track. */
+.repeat-btn {
+  font-size: 1.1rem;
+  opacity: 0.35;
+}
+
+.repeat-btn.active {
+  opacity: 1;
+  color: var(--accent-color);
+}
+
+.repeat-hint {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  min-height: 1em;
+}
+
 .play-main {
   width: 64px;
   height: 64px;

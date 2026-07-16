@@ -434,6 +434,7 @@ const state = {
   moreCtx: null,          // { channelId, apiKey, clientVersion, token } | null
   canLoadMore: false,     // whether to show the "더 보기" button
   loadingMore: false,     // a "더 보기" fetch is in flight
+  continuous: true,       // true: play the list through; false: stop after each track
   resumeOnReturn: false,  // was playing when backgrounded → resume on return
   expectedVideoId: null,  // the videoId we asked the iframe player to play
   lastLoadAt: 0,          // when we last called loadVideoById (drift-guard debounce)
@@ -460,6 +461,8 @@ function getServerUrl() {
 const playBtn = document.getElementById('play-btn');
 const prevBtn = document.getElementById('prev-btn');
 const nextBtn = document.getElementById('next-btn');
+const repeatBtn = document.getElementById('repeat-btn');
+const repeatHint = document.getElementById('repeat-hint');
 const trackTitle = document.getElementById('track-title');
 const trackChannel = document.getElementById('track-channel');
 const currentTimeEl = document.getElementById('current-time');
@@ -527,7 +530,7 @@ window.onYouTubeIframeAPIReady = function () {
 function onPlayerStateChange(e) {
   // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
   if (e.data === YT.PlayerState.ENDED) {
-    nextTrack();
+    handleTrackEnded();
   } else if (e.data === YT.PlayerState.PLAYING) {
     // Drift guard: if YouTube auto-started a video we never requested — e.g. a
     // "recommended" clip from another channel after ours ended, or an autoplay
@@ -601,8 +604,8 @@ audioPlayer.addEventListener('pause', () => {
 
 audioPlayer.addEventListener('ended', () => {
   // Playback is from a fully-downloaded blob, so 'ended' always means the real
-  // end of the track → advance to the next one.
-  if (state.engine === 'server') nextTrack();
+  // end of the track.
+  if (state.engine === 'server') handleTrackEnded();
 });
 
 audioPlayer.addEventListener('timeupdate', () => {
@@ -1089,6 +1092,19 @@ function nextTrack() {
   playTrack(nextIdx);
 }
 
+// A track finished on its own. In continuous mode roll on to the next one (a
+// music/radio session); otherwise stop here so a single talk/lecture ends when
+// it ends. The prev/next buttons always work regardless of the mode.
+function handleTrackEnded() {
+  if (state.continuous) {
+    nextTrack();
+    return;
+  }
+  state.isPlaying = false;
+  updatePlayButton();
+  document.querySelector('.player-panel').classList.remove('playing');
+}
+
 function prevTrack() {
   if (state.currentPlaylist.length === 0) return;
   let prevIdx = state.currentTrackIndex - 1;
@@ -1150,6 +1166,26 @@ progressBarContainer.addEventListener('click', (e) => {
 
 prevBtn.addEventListener('click', prevTrack);
 nextBtn.addEventListener('click', nextTrack);
+
+// ============================================================================
+//  Continuous / single-track toggle
+//  Music or radio → keep the list rolling. A talk or lecture → stop when the
+//  track ends instead of sliding into the next one.
+// ============================================================================
+function updateRepeatUI() {
+  repeatBtn.classList.toggle('active', state.continuous);
+  repeatBtn.setAttribute('aria-label', state.continuous ? '이어듣기 켜짐' : '한 곡만 재생');
+  repeatBtn.setAttribute('aria-pressed', String(state.continuous));
+  repeatHint.textContent = state.continuous
+    ? '이어듣기 — 목록을 계속 재생합니다'
+    : '한 곡만 — 이 곡이 끝나면 멈춥니다';
+}
+
+repeatBtn.addEventListener('click', () => {
+  state.continuous = !state.continuous;
+  localStorage.setItem('mytube_continuous', state.continuous ? '1' : '0');
+  updateRepeatUI();
+});
 
 // Auto-resume: the YouTube embed pauses itself when the app is backgrounded
 // (e.g. the overview/square button). Remember that we were playing and resume
@@ -1278,4 +1314,6 @@ if ('serviceWorker' in navigator) {
 // ============================================================================
 loadSubscribedChannels();
 serverUrlInput.value = getServerUrl();
+state.continuous = localStorage.getItem('mytube_continuous') !== '0'; // default: on
+updateRepeatUI();
 refreshIcons();
