@@ -74,6 +74,15 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
+/* Maker's brand mark, sitting quietly beside the logo. */
+.brand {
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
 /* Buttons */
 .icon-btn {
   background: rgba(255, 255, 255, 0.05);
