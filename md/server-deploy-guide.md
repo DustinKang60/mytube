@@ -89,10 +89,9 @@ Your quick Tunnel has been created! Visit it at (it may take some time to be rea
 https://xxxx-xxxx-xxxx.trycloudflare.com
 ```
 
-`boot-setup.sh`로 부팅 자동시작을 설정한 경우엔 주소가 파일에 기록되므로
-Termux에서 `myurl` 명령으로 바로 확인할 수 있다.
-
-> ⚠️ `boot-setup.sh`는 현재 `server/README.md`에 **문서화되어 있지 않다.** 보강 필요.
+`boot-setup.sh`로 부팅 자동시작을 설정한 경우엔 주소가 `~/mytube-server/current-url.txt`에
+기록되므로 Termux에서 `myurl` 명령으로 바로 확인할 수 있다.
+(설치·사용법은 [server/README.md](../server/README.md) 참고)
 
 ## 로그 읽는 법
 

@@ -2,24 +2,53 @@
 """
 mytube audio server
 --------------------
-Given a YouTube videoId, extract the best m4a audio stream with yt-dlp and
-proxy the bytes to the client (forwarding Range requests so seeking works).
+Downloads a YouTube track's m4a audio to a local disk cache using many
+parallel range requests, then serves that finished local file to the app.
 
-Why proxy instead of returning the URL directly?
-  googlevideo URLs are locked to the IP that extracted them, so the phone (on
-  LTE / different Wi-Fi) can't play them. Streaming through this server, whose
-  IP matches, works from anywhere.
+Why download instead of proxying the stream?
+  googlevideo throttles each connection to roughly real-time (~30 KB/s), so a
+  single proxied stream can never buffer ahead of playback. Mobile browsers
+  suspend background network once the screen is off, so playback died about
+  two minutes in — as soon as the small buffer drained. The throttle is per
+  connection, so fetching ~16 ranges at once beats it (measured ~5.5 MB/s: a
+  64.9 MB one-hour clip in 12s). The app then downloads the whole finished
+  file into memory and plays it from a Blob, needing no network afterwards —
+  which is what makes screen-off playback survive.
+
+Why serve the bytes at all, instead of handing over the googlevideo URL?
+  Those URLs are locked to the IP that extracted them, so the phone (on LTE /
+  another Wi-Fi) can't use them. Serving from this server, whose IP matches,
+  works from anywhere.
 
 Run:
     python mytube-server.py            # listens on 0.0.0.0:8080
     PORT=9000 python mytube-server.py  # custom port
 
+Environment:
+    PORT                 listen port (default 8080)
+    MYTUBE_DL_CONNS      parallel range connections per download (default 16)
+    MYTUBE_CACHE_DIR     cache location (default ~/mytube-server/audio-cache)
+    MYTUBE_CACHE_MAX_MB  cache cap in MB, LRU-evicted (default 4096)
+    YTDLP_JS_RUNTIME     e.g. "node" — lets yt-dlp solve YouTube's signature
+                         challenge; optional but improves extraction
+
 Endpoints:
     GET  /health          -> {"ok": true}
-    GET  /audio/<videoId> -> audio/mp4 stream (supports Range)
+    GET  /audio/<videoId> -> audio/mp4 of the whole track (supports Range).
+                             First request downloads + caches it (so it blocks
+                             for the download); later requests are served from
+                             disk. Falls back to slow direct streaming if the
+                             parallel download fails.
+    GET  /fetch?url=...   -> relays a YouTube page/RSS feed from this server's
+                             residential IP (host-allowlisted to YouTube, so
+                             the public tunnel never becomes an open proxy).
+                             The app prefers this over flaky public CORS proxies.
     POST /browse          -> proxies YouTube's continuation API so the app's
                              "더 보기" list can page past the first ~30 videos
                              (body: {apiKey, clientVersion, continuation})
+
+Note: live streams don't work — yt-dlp can't produce an m4a for them
+("Requested format is not available"), and the app doesn't support them.
 """
 
 import os

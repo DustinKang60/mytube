@@ -3,6 +3,8 @@
 mytube 개발 과정에서 겪은 문제·진단·결정을 남긴 곳.
 "왜 이렇게 만들었는지"와 "이미 시도해봤다 실패한 것"을 기록해서 같은 길을 두 번 가지 않기 위함.
 
+> 프로젝트 소개는 [루트 README](../README.md), 서버 설치는 [server/README.md](../server/README.md) 참고.
+
 | 문서 | 내용 |
 |---|---|
 | [2026-07-17-background-playback.md](2026-07-17-background-playback.md) | **화면 끄면 2분 만에 끊기던 문제** — 진단 과정(막다른 길 포함)과 해결. 30KB/s → 5.5MB/s |
