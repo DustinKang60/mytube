@@ -27,10 +27,14 @@ import re
 import sys
 import json
 import time
+import errno
+import shutil
+import threading
 import socketserver
 import subprocess
 import urllib.request
 import urllib.error
+import concurrent.futures
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -44,6 +48,164 @@ VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 # /fetch only relays these hosts — the tunnel is public, so never be an open proxy.
 ALLOWED_FETCH_HOSTS = {"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"}
 _cache = {}  # videoId -> (url, expiry_epoch)
+
+# ---------------------------------------------------------------------------
+#  On-disk audio cache
+#  googlevideo throttles each connection to ~real-time (~30 KB/s), so a single
+#  streamed connection can never get ahead of playback — which is why phone
+#  playback dies a couple minutes after the screen goes off (the browser stops
+#  fetching in the background and the small buffer drains). The throttle is
+#  PER CONNECTION, though, so we download each track with many parallel range
+#  requests (≈ N × 30 KB/s), save the finished file to disk, and serve that
+#  local file. A complete local file downloads to the phone fast enough that it
+#  can hold the whole track and keep playing with the screen off.
+# ---------------------------------------------------------------------------
+CACHE_DIR = os.environ.get(
+    "MYTUBE_CACHE_DIR",
+    os.path.join(os.path.expanduser("~"), "mytube-server", "audio-cache"),
+)
+CACHE_MAX_BYTES = int(os.environ.get("MYTUBE_CACHE_MAX_MB", "4096")) * 1024 * 1024
+DL_CONNS = int(os.environ.get("MYTUBE_DL_CONNS", "16"))   # parallel range fetches
+DL_CHUNK = 256 * 1024                                     # per-read block size
+DL_CONN_TIMEOUT = 300                                     # seconds per connection
+
+os.makedirs(CACHE_DIR, exist_ok=True)
+_dl_locks_guard = threading.Lock()
+_dl_locks = {}  # videoId -> threading.Lock (one download per id at a time)
+
+
+def _cache_path(video_id):
+    return os.path.join(CACHE_DIR, video_id + ".m4a")
+
+
+def _dl_lock_for(video_id):
+    with _dl_locks_guard:
+        lock = _dl_locks.get(video_id)
+        if lock is None:
+            lock = threading.Lock()
+            _dl_locks[video_id] = lock
+        return lock
+
+
+def _evict_cache():
+    """Keep the cache under CACHE_MAX_BYTES, deleting least-recently-used files."""
+    try:
+        files = []
+        total = 0
+        for name in os.listdir(CACHE_DIR):
+            if not name.endswith(".m4a"):
+                continue
+            p = os.path.join(CACHE_DIR, name)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            files.append((st.st_atime, st.st_size, p))
+            total += st.st_size
+        files.sort()  # oldest access first
+        for _atime, size, p in files:
+            if total <= CACHE_MAX_BYTES:
+                break
+            try:
+                os.remove(p)
+                total -= size
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _fetch_range(url, start, end, fd):
+    """Download bytes [start, end] of url and pwrite them at their offset."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": UA, "Range": f"bytes={start}-{end}"})
+    with urllib.request.urlopen(req, timeout=DL_CONN_TIMEOUT) as r:
+        pos = start
+        while True:
+            block = r.read(DL_CHUNK)
+            if not block:
+                break
+            os.pwrite(fd, block, pos)
+            pos += len(block)
+    return pos - start
+
+
+def _parallel_download(url, dest_path, total):
+    """Download `total` bytes of `url` into dest_path using DL_CONNS ranges."""
+    part = dest_path + ".part"
+    fd = os.open(part, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.ftruncate(fd, total)
+        n = max(1, DL_CONNS)
+        seg = (total + n - 1) // n
+        ranges = []
+        for i in range(n):
+            start = i * seg
+            if start >= total:
+                break
+            end = min(start + seg, total) - 1
+            ranges.append((start, end))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(ranges)) as ex:
+            futs = [ex.submit(_fetch_range, url, s, e, fd) for (s, e) in ranges]
+            for f in concurrent.futures.as_completed(futs):
+                f.result()  # re-raise any worker error
+        os.close(fd)
+        fd = -1
+        os.replace(part, dest_path)
+    finally:
+        if fd != -1:
+            os.close(fd)
+        if os.path.exists(part):
+            try:
+                os.remove(part)
+            except OSError:
+                pass
+
+
+def ensure_cached(video_id):
+    """Return the local path for video_id, downloading it (fast, parallel) first
+    if it isn't already on disk. Raises on failure so the caller can fall back."""
+    path = _cache_path(video_id)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        os.utime(path, None)  # mark recently used for LRU eviction
+        return path
+
+    lock = _dl_lock_for(video_id)
+    with lock:
+        # Another request may have finished the download while we waited.
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            os.utime(path, None)
+            return path
+
+        url = extract_audio_url(video_id)
+        # Ask for one byte to learn the total size and confirm Range support.
+        head_req = urllib.request.Request(
+            url, headers={"User-Agent": UA, "Range": "bytes=0-0"})
+        try:
+            with urllib.request.urlopen(head_req, timeout=30) as r:
+                crange = r.headers.get("Content-Range", "")  # bytes 0-0/12345
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 410):
+                url = extract_audio_url(video_id, force=True)
+                with urllib.request.urlopen(
+                        urllib.request.Request(url, headers={"User-Agent": UA, "Range": "bytes=0-0"}),
+                        timeout=30) as r:
+                    crange = r.headers.get("Content-Range", "")
+            else:
+                raise
+        total = int(crange.rsplit("/", 1)[-1]) if "/" in crange else 0
+        if total <= 0:
+            raise RuntimeError("could not determine audio size for parallel download")
+
+        t0 = time.time()
+        _parallel_download(url, path, total)
+        dt = time.time() - t0
+        mb = total / (1024 * 1024)
+        sys.stderr.write(
+            f"[cache] {video_id}: {mb:.1f}MB in {dt:.0f}s "
+            f"({mb / dt:.2f} MB/s, {DL_CONNS} conns)\n")
+        _evict_cache()
+        return path
 
 
 def extract_audio_url(video_id, force=False):
@@ -172,8 +334,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         video_id = m.group(1)
 
-        # Resolve the upstream URL, retrying once with a fresh extraction if the
-        # cached URL has expired (403/410 from googlevideo).
+        # Cache-first: download the whole track fast (parallel range requests)
+        # to disk, then serve that local file. A complete local file transfers
+        # to the phone quickly enough to keep playing with the screen off.
+        try:
+            local_path = ensure_cached(video_id)
+            self._serve_local_file(local_path)
+            return
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return  # client went away mid-transfer; not an error
+        except Exception as e:
+            sys.stderr.write(f"[cache] {video_id} failed ({e}) — proxy fallback\n")
+
+        # Fallback: if the parallel download failed, stream directly from
+        # googlevideo (slow, and no reliable screen-off playback, but at least
+        # something plays).
         try:
             upstream = self._open_upstream(video_id, force=False)
         except _Expired:
@@ -186,7 +361,6 @@ class Handler(BaseHTTPRequestHandler):
             self._simple(502, f"extract error: {e}".encode())
             return
 
-        # Relay status + headers, then stream the body.
         self.send_response(upstream.status)  # 200 or 206
         self._cors()
         passthrough = ("Content-Type", "Content-Length", "Content-Range")
@@ -207,6 +381,45 @@ class Handler(BaseHTTPRequestHandler):
             pass  # client seeked or navigated away; not an error
         finally:
             upstream.close()
+
+    def _serve_local_file(self, path):
+        """Serve a complete local audio file, honouring a Range request."""
+        size = os.path.getsize(path)
+        rng = self.headers.get("Range")
+        start, end = 0, size - 1
+        partial = False
+        if rng:
+            mrange = re.match(r"bytes=(\d*)-(\d*)", rng)
+            if mrange:
+                gs, ge = mrange.group(1), mrange.group(2)
+                if gs:
+                    start = int(gs)
+                    end = int(ge) if ge else size - 1
+                elif ge:  # suffix range: last N bytes
+                    start = max(0, size - int(ge))
+                start = min(start, size - 1)
+                end = min(end, size - 1)
+                partial = True
+
+        length = end - start + 1
+        self.send_response(206 if partial else 200)
+        self._cors()
+        self.send_header("Content-Type", "audio/mp4")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+
+        with open(path, "rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                block = f.read(min(64 * 1024, remaining))
+                if not block:
+                    break
+                self.wfile.write(block)
+                remaining -= len(block)
 
     def _do_fetch(self, raw_url):
         # This server is reachable from the public internet through the tunnel,

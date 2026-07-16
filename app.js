@@ -999,13 +999,17 @@ async function playViaServer(track) {
     state.currentPlaylist[state.currentTrackIndex] &&
     state.currentPlaylist[state.currentTrackIndex].videoId === requestedVideoId;
 
-  trackTitle.textContent = '불러오는 중... ' + track.title;
+  // Phase 1: the server may first download the whole track from YouTube (fast
+  // parallel fetch, but still up to a minute or two for a long clip) before it
+  // sends the first byte. Show a distinct "준비 중" so a long, progress-less
+  // wait here doesn't look frozen.
+  trackTitle.textContent = '서버 준비 중... ' + track.title;
 
   try {
     const resp = await fetch(`${getServerUrl()}/audio/${track.videoId}`, { signal });
     if (!resp.ok) throw new Error(`server ${resp.status}`);
 
-    // Read the whole body, updating a % (or MB) indicator as it arrives.
+    // Phase 2: transfer the file to the phone, updating a % (or MB) indicator.
     const total = parseInt(resp.headers.get('Content-Length') || '0', 10);
     const reader = resp.body.getReader();
     const chunks = [];
@@ -1017,9 +1021,9 @@ async function playViaServer(track) {
       chunks.push(value);
       received += value.length;
       if (total > 0) {
-        trackTitle.textContent = `불러오는 중 ${Math.floor((received / total) * 100)}% — ${track.title}`;
+        trackTitle.textContent = `받는 중 ${Math.floor((received / total) * 100)}% — ${track.title}`;
       } else {
-        trackTitle.textContent = `불러오는 중 ${(received / 1048576).toFixed(1)}MB — ${track.title}`;
+        trackTitle.textContent = `받는 중 ${(received / 1048576).toFixed(1)}MB — ${track.title}`;
       }
     }
 
