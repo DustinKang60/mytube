@@ -435,6 +435,7 @@ const state = {
   canLoadMore: false,     // whether to show the "더 보기" button
   loadingMore: false,     // a "더 보기" fetch is in flight
   continuous: true,       // true: play the list through; false: stop after each track
+  speed: 1,               // playback rate (see SPEEDS)
   resumeOnReturn: false,  // was playing when backgrounded → resume on return
   expectedVideoId: null,  // the videoId we asked the iframe player to play
   lastLoadAt: 0,          // when we last called loadVideoById (drift-guard debounce)
@@ -459,10 +460,9 @@ function getServerUrl() {
 //  DOM Elements
 // ============================================================================
 const playBtn = document.getElementById('play-btn');
-const prevBtn = document.getElementById('prev-btn');
-const nextBtn = document.getElementById('next-btn');
 const repeatBtn = document.getElementById('repeat-btn');
-const repeatHint = document.getElementById('repeat-hint');
+const speedBtn = document.getElementById('speed-btn');
+const speedLabel = document.getElementById('speed-label');
 const trackTitle = document.getElementById('track-title');
 const trackChannel = document.getElementById('track-channel');
 const currentTimeEl = document.getElementById('current-time');
@@ -1037,6 +1037,7 @@ async function playViaServer(track) {
     currentAudioBlobUrl = URL.createObjectURL(blob);
     audioPlayer.src = currentAudioBlobUrl;
     audioPlayer.load();
+    applyPlaybackRate(); // load() resets the rate — re-apply the chosen speed
     trackTitle.textContent = track.title;
     audioPlayer.play().catch((err) => console.warn('audio play() rejected:', err));
   } catch (e) {
@@ -1164,27 +1165,53 @@ progressBarContainer.addEventListener('click', (e) => {
   }
 });
 
-prevBtn.addEventListener('click', prevTrack);
-nextBtn.addEventListener('click', nextTrack);
-
 // ============================================================================
 //  Continuous / single-track toggle
 //  Music or radio → keep the list rolling. A talk or lecture → stop when the
 //  track ends instead of sliding into the next one.
+//  (The lock-screen / notification prev-next controls stay available via
+//   MediaSession, so nextTrack/prevTrack are still used even though the
+//   in-app skip buttons are gone.)
 // ============================================================================
 function updateRepeatUI() {
   repeatBtn.classList.toggle('active', state.continuous);
   repeatBtn.setAttribute('aria-label', state.continuous ? '이어듣기 켜짐' : '한 곡만 재생');
   repeatBtn.setAttribute('aria-pressed', String(state.continuous));
-  repeatHint.textContent = state.continuous
-    ? '이어듣기 — 목록을 계속 재생합니다'
-    : '한 곡만 — 이 곡이 끝나면 멈춥니다';
 }
 
 repeatBtn.addEventListener('click', () => {
   state.continuous = !state.continuous;
   localStorage.setItem('mytube_continuous', state.continuous ? '1' : '0');
   updateRepeatUI();
+});
+
+// ============================================================================
+//  Playback speed
+//  Most of the subscribed channels are talk/lecture, which are far easier to
+//  get through at 1.25–2x. The audio is already fully in memory, so a rate
+//  change applies instantly (and the browser keeps the pitch corrected).
+// ============================================================================
+const SPEEDS = [1, 1.25, 1.5, 2];
+
+function applyPlaybackRate() {
+  audioPlayer.playbackRate = state.speed;
+  try {
+    if (ytPlayer && ytReady && ytPlayer.setPlaybackRate) ytPlayer.setPlaybackRate(state.speed);
+  } catch (e) { /* the embed may not offer every rate; ignore */ }
+}
+
+function updateSpeedUI() {
+  speedLabel.textContent = `${state.speed}x`;
+  speedBtn.classList.toggle('active', state.speed !== 1);
+  speedBtn.setAttribute('aria-label', `재생 속도 ${state.speed}배`);
+}
+
+speedBtn.addEventListener('click', () => {
+  const next = (SPEEDS.indexOf(state.speed) + 1) % SPEEDS.length;
+  state.speed = SPEEDS[next];
+  localStorage.setItem('mytube_speed', String(state.speed));
+  applyPlaybackRate();
+  updateSpeedUI();
 });
 
 // Auto-resume: the YouTube embed pauses itself when the app is backgrounded
@@ -1316,4 +1343,7 @@ loadSubscribedChannels();
 serverUrlInput.value = getServerUrl();
 state.continuous = localStorage.getItem('mytube_continuous') !== '0'; // default: on
 updateRepeatUI();
+const savedSpeed = parseFloat(localStorage.getItem('mytube_speed'));
+state.speed = SPEEDS.includes(savedSpeed) ? savedSpeed : 1;
+updateSpeedUI();
 refreshIcons();

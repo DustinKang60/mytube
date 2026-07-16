@@ -55,20 +55,16 @@
 
         <!-- Controls -->
         <div class="controls">
-          <button id="prev-btn" class="icon-btn ctrl-btn" aria-label="이전곡">
-            <i data-lucide="skip-back"></i>
+          <button id="speed-btn" class="icon-btn ctrl-btn speed-btn" aria-label="재생 속도">
+            <span id="speed-label">1x</span>
           </button>
           <button id="play-btn" class="icon-btn ctrl-btn play-main" aria-label="재생">
             <i data-lucide="play" class="play-icon"></i>
           </button>
-          <button id="next-btn" class="icon-btn ctrl-btn" aria-label="다음곡">
-            <i data-lucide="skip-forward"></i>
-          </button>
-          <button id="repeat-btn" class="icon-btn ctrl-btn repeat-btn" aria-label="반복 재생">
-            <i data-lucide="repeat" class="repeat-icon"></i>
+          <button id="repeat-btn" class="icon-btn ctrl-btn repeat-btn" aria-label="재생 모드">
+            <i data-lucide="repeat"></i>
           </button>
         </div>
-        <p id="repeat-hint" class="repeat-hint"></p>
       </section>
 
       <!-- Channels & Playlist Tabs -->

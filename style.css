@@ -237,8 +237,8 @@ body {
   background: rgba(255, 255, 255, 0.05);
 }
 
-/* Repeat toggle: lit when the playlist keeps going, dimmed when playback
-   stops after the current track. */
+/* Playback-mode toggle (right of play). Lit = play the list through;
+   dimmed = stop when the current track ends. */
 .repeat-btn {
   font-size: 1.1rem;
   opacity: 0.35;
@@ -249,12 +249,19 @@ body {
   color: var(--accent-color);
 }
 
-.repeat-hint {
-  margin: 0.5rem 0 0;
-  text-align: center;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  min-height: 1em;
+/* Playback-speed cycler (left of play). Shows the current rate as its label,
+   so it needs text sizing rather than an icon. */
+.speed-btn {
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  opacity: 0.6;
+}
+
+.speed-btn.active {
+  opacity: 1;
+  color: var(--accent-color);
 }
 
 .play-main {
