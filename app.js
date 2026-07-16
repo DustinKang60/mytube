@@ -600,18 +600,9 @@ audioPlayer.addEventListener('pause', () => {
 });
 
 audioPlayer.addEventListener('ended', () => {
-  if (state.engine !== 'server') return;
-  // A tunnel drop can look like a normal end-of-media (the truncated stream is
-  // reported as "finished"). If we're nowhere near the real duration, it's a
-  // dropped connection, not the end of the track → reconnect and resume.
-  const cur = audioPlayer.currentTime || 0;
-  const dur = audioPlayer.duration || 0;
-  if (dur > 0 && cur < dur - 2) {
-    console.warn('스트림이 끝나기 전에 종료됨 — 재연결 시도');
-    reconnectServerStream();
-  } else {
-    nextTrack();
-  }
+  // Playback is from a fully-downloaded blob, so 'ended' always means the real
+  // end of the track → advance to the next one.
+  if (state.engine === 'server') nextTrack();
 });
 
 audioPlayer.addEventListener('timeupdate', () => {
@@ -625,143 +616,16 @@ audioPlayer.addEventListener('timeupdate', () => {
   }
 });
 
-// Playback (re)started — event-driven, so it fires even with the screen off.
-// Use it to clear the reconnect backoff: any healthy resume means the last
-// reconnect worked, so the next drop starts counting fresh.
-audioPlayer.addEventListener('playing', () => {
-  if (state.engine !== 'server') return;
-  serverReconnectAttempts = 0;
-  watchdogLastTime = audioPlayer.currentTime || 0;
-  watchdogLastProgressAt = Date.now();
-});
-
-// ============================================================================
-//  Stream-drop detection (background-safe)
-//  The whole point of this app is screen-off playback, but mobile browsers
-//  FREEZE setInterval/setTimeout when the screen is off — so the interval
-//  watchdog below can't catch a mid-playback tunnel drop in the background.
-//  These media events, by contrast, are event-driven and still fire with the
-//  screen off, so they're the primary trigger for reconnecting; the interval
-//  watchdog is just a foreground backup.
-//    error   → hard network/decode failure
-//    stalled → the browser is fetching but data stopped arriving (a drop)
-//  Cloudflare's "stream N canceled by remote" surfaces as one of these.
-// ============================================================================
+// The blob is entirely in memory, so a playback 'error' isn't a network drop
+// we can retry — it's a bad/undecodable file. Fall back to the YouTube embed.
 audioPlayer.addEventListener('error', () => {
-  if (state.engine !== 'server') return; // ignore errors from clearing src
-  console.warn('서버 재생 오류 — 재연결 시도');
-  reconnectServerStream();
-});
-
-audioPlayer.addEventListener('stalled', () => {
-  if (state.engine !== 'server' || !state.isPlaying) return;
-  console.warn('서버 스트림 정체(stalled) — 재연결 시도');
-  reconnectServerStream();
-});
-
-// ============================================================================
-//  Server-stream reconnect
-//  Cloudflare Quick Tunnel (the free trycloudflare.com tunnel) resets
-//  long-lived connections every few minutes ("stream N canceled by remote"
-//  in the tunnel log) — not a yt-dlp/audio problem. A watchdog checks that
-//  currentTime is actually advancing; if it stalls, or the <audio> element
-//  fires 'error', we reload the same URL and seek back to where playback
-//  stopped. After too many failed attempts in a row we give up and fall back
-//  to the YouTube embed instead of looping forever.
-// ============================================================================
-const SERVER_MAX_RECONNECTS = 5;
-const SERVER_STALL_TIMEOUT_MS = 8000;
-const RECONNECT_GIVEUP_MS = 20000; // a single reconnect gets this long to recover
-let serverReconnectAttempts = 0;
-let serverWatchdogTimer = null;
-let watchdogLastTime = 0;
-let watchdogLastProgressAt = 0;
-let serverReconnecting = false;     // a reload is in flight — don't stack another
-let reconnectGiveupTimer = null;
-
-function startServerWatchdog() {
-  serverReconnectAttempts = 0;
-  watchdogLastTime = 0;
-  watchdogLastProgressAt = Date.now();
-  serverReconnecting = false;
-  clearTimeout(reconnectGiveupTimer);
-  clearInterval(serverWatchdogTimer);
-  serverWatchdogTimer = setInterval(() => {
-    if (state.engine !== 'server' || !state.isPlaying) return;
-    // While a reload is in flight, currentTime naturally sits still — leave the
-    // reconnect alone to recover instead of piling on more attempts.
-    if (serverReconnecting) return;
-    const cur = audioPlayer.currentTime || 0;
-    if (cur > watchdogLastTime + 0.25) {
-      watchdogLastTime = cur;
-      watchdogLastProgressAt = Date.now();
-      serverReconnectAttempts = 0; // healthy progress — reset the backoff
-      return;
-    }
-    if (Date.now() - watchdogLastProgressAt > SERVER_STALL_TIMEOUT_MS) {
-      console.warn('서버 스트림 정체 감지 — 재연결 시도');
-      reconnectServerStream();
-    }
-  }, 2000);
-}
-
-function stopServerWatchdog() {
-  clearInterval(serverWatchdogTimer);
-  serverWatchdogTimer = null;
-  clearTimeout(reconnectGiveupTimer);
-  serverReconnecting = false;
-}
-
-// Reload the current track's stream from the server and resume at the
-// position we stalled at, instead of restarting the track or bailing to the
-// embed on the very first hiccup. Only one reconnect runs at a time; the
-// watchdog is held off (serverReconnecting) until this one resolves so a slow
-// reload isn't mistaken for a fresh stall and doesn't burn extra attempts.
-function reconnectServerStream() {
+  if (state.engine !== 'server' || !currentAudioBlobUrl) return; // ignore src-clear
   const track = state.currentPlaylist[state.currentTrackIndex];
-  if (!track || state.engine !== 'server' || serverReconnecting) return;
-
-  serverReconnectAttempts++;
-  if (serverReconnectAttempts > SERVER_MAX_RECONNECTS) {
-    console.warn('서버 재연결 한도 초과 — 유튜브 임베드로 전환');
-    stopServerWatchdog();
-    trackTitle.textContent = '서버 연결 불안정 — 유튜브로 전환 중...';
-    playViaIframe(track);
-    return;
-  }
-
-  serverReconnecting = true;
-  const resumeAt = audioPlayer.currentTime || 0;
-  const wasPlaying = state.isPlaying;
-
-  // Reconnect finished (or aborted) — re-arm the watchdog from "now" so it
-  // measures the *next* stall, not the time spent reloading.
-  const finish = () => {
-    audioPlayer.removeEventListener('loadedmetadata', onResumed);
-    clearTimeout(reconnectGiveupTimer);
-    serverReconnecting = false;
-    watchdogLastTime = audioPlayer.currentTime || 0;
-    watchdogLastProgressAt = Date.now();
-  };
-  const onResumed = () => {
-    if (resumeAt > 0) {
-      try { audioPlayer.currentTime = resumeAt; } catch (e) { /* ignore */ }
-    }
-    if (wasPlaying) audioPlayer.play().catch((err) => console.warn('reconnect play() rejected:', err));
-    finish();
-  };
-
-  // If the reload never produces metadata (server truly unreachable), release
-  // the hold so the watchdog can try again / eventually fall back to the embed.
-  reconnectGiveupTimer = setTimeout(() => {
-    console.warn('재연결 응답 없음 — 다시 시도');
-    finish();
-  }, RECONNECT_GIVEUP_MS);
-
-  audioPlayer.addEventListener('loadedmetadata', onResumed);
-  audioPlayer.src = `${getServerUrl()}/audio/${track.videoId}`;
-  audioPlayer.load();
-}
+  if (!track) return;
+  console.warn('다운로드한 오디오 재생 오류 — 유튜브 임베드로 폴백');
+  trackTitle.textContent = '재생 오류 — 유튜브로 전환 중...';
+  playViaIframe(track);
+});
 
 // ============================================================================
 //  Helpers
@@ -1089,28 +953,102 @@ function playTrack(index) {
   }
 }
 
-// Stream audio from the personal server through the <audio> element.
-function playViaServer(track) {
+// Play from the personal server by DOWNLOADING THE WHOLE audio file into memory
+// first, then playing it from a Blob URL.
+//
+// Why fully download instead of streaming? Mobile browsers stop fetching more
+// stream data once the screen is off (they suspend background network), so a
+// progressively-streamed <audio> plays only as long as its pre-buffered ~2 min
+// and then stalls with the screen off. A fully in-memory Blob needs no further
+// network at all, so playback survives with the screen off / app backgrounded
+// for the whole track — the same reason a downloaded podcast keeps playing.
+let currentAudioBlobUrl = null;   // object URL currently loaded (revoke to free)
+let audioDownloadAbort = null;    // AbortController for the in-flight download
+
+function revokeCurrentBlob() {
+  if (currentAudioBlobUrl) {
+    URL.revokeObjectURL(currentAudioBlobUrl);
+    currentAudioBlobUrl = null;
+  }
+}
+
+async function playViaServer(track) {
   state.engine = 'server';
   clearInterval(progressTimer);
   try {
     if (ytPlayer && ytReady) ytPlayer.stopVideo();
   } catch (e) { /* ignore */ }
 
-  startServerWatchdog();
-  audioPlayer.src = `${getServerUrl()}/audio/${track.videoId}`;
-  audioPlayer.load();
-  audioPlayer.play().catch((err) => console.warn('audio play() rejected:', err));
+  // Stop whatever is currently playing right away, so tapping a new track gives
+  // immediate feedback ("불러오는 중") instead of the previous track playing on
+  // for the length of the new download.
+  audioPlayer.pause();
+  progressBar.style.width = '0%';
+  currentTimeEl.textContent = '0:00';
+
+  // Cancel any download still running for a previously-tapped track.
+  if (audioDownloadAbort) audioDownloadAbort.abort();
+  audioDownloadAbort = new AbortController();
+  const signal = audioDownloadAbort.signal;
+  const requestedVideoId = track.videoId;
+
+  // True while THIS track is still the one the user wants (guards against the
+  // user tapping another track mid-download).
+  const stillCurrent = () =>
+    !signal.aborted &&
+    state.currentPlaylist[state.currentTrackIndex] &&
+    state.currentPlaylist[state.currentTrackIndex].videoId === requestedVideoId;
+
+  trackTitle.textContent = '불러오는 중... ' + track.title;
+
+  try {
+    const resp = await fetch(`${getServerUrl()}/audio/${track.videoId}`, { signal });
+    if (!resp.ok) throw new Error(`server ${resp.status}`);
+
+    // Read the whole body, updating a % (or MB) indicator as it arrives.
+    const total = parseInt(resp.headers.get('Content-Length') || '0', 10);
+    const reader = resp.body.getReader();
+    const chunks = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!stillCurrent()) { reader.cancel(); return; }
+      chunks.push(value);
+      received += value.length;
+      if (total > 0) {
+        trackTitle.textContent = `불러오는 중 ${Math.floor((received / total) * 100)}% — ${track.title}`;
+      } else {
+        trackTitle.textContent = `불러오는 중 ${(received / 1048576).toFixed(1)}MB — ${track.title}`;
+      }
+    }
+
+    if (!stillCurrent()) return; // user moved on while downloading — discard
+
+    const blob = new Blob(chunks, { type: resp.headers.get('Content-Type') || 'audio/mp4' });
+    revokeCurrentBlob();
+    currentAudioBlobUrl = URL.createObjectURL(blob);
+    audioPlayer.src = currentAudioBlobUrl;
+    audioPlayer.load();
+    trackTitle.textContent = track.title;
+    audioPlayer.play().catch((err) => console.warn('audio play() rejected:', err));
+  } catch (e) {
+    if (signal.aborted) return; // superseded by a newer track — not a real error
+    console.warn('오디오 다운로드 실패 — 유튜브 임베드로 폴백:', e.message);
+    trackTitle.textContent = '서버 다운로드 실패 — 유튜브로 전환 중...';
+    playViaIframe(track);
+  }
 }
 
 // Play through the hidden YouTube IFrame player (no-setup fallback).
 function playViaIframe(track) {
   state.engine = 'iframe';
-  stopServerWatchdog();
+  if (audioDownloadAbort) audioDownloadAbort.abort(); // stop any server download
   try {
     audioPlayer.pause();
     audioPlayer.removeAttribute('src');
     audioPlayer.load();
+    revokeCurrentBlob();
   } catch (e) { /* ignore */ }
 
   state.expectedVideoId = track.videoId;
