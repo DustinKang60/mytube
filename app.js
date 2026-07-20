@@ -552,6 +552,7 @@ function onPlayerStateChange(e) {
     }
 
     state.isPlaying = true;
+    setMediaPlaybackState('playing');
     updatePlayButton();
     startProgressTimer();
     document.querySelector('.player-panel').classList.add('playing');
@@ -560,6 +561,7 @@ function onPlayerStateChange(e) {
     if (track) trackTitle.textContent = track.title;
   } else if (e.data === YT.PlayerState.PAUSED) {
     state.isPlaying = false;
+    setMediaPlaybackState('paused');
     updatePlayButton();
     document.querySelector('.player-panel').classList.remove('playing');
   }
@@ -589,6 +591,7 @@ function startProgressTimer() {
 // ============================================================================
 audioPlayer.addEventListener('play', () => {
   state.isPlaying = true;
+  setMediaPlaybackState('playing');
   updatePlayButton();
   document.querySelector('.player-panel').classList.add('playing');
   const track = state.currentPlaylist[state.currentTrackIndex];
@@ -598,6 +601,7 @@ audioPlayer.addEventListener('play', () => {
 audioPlayer.addEventListener('pause', () => {
   if (state.engine !== 'server') return;
   state.isPlaying = false;
+  setMediaPlaybackState('paused');
   updatePlayButton();
   document.querySelector('.player-panel').classList.remove('playing');
 });
@@ -1070,6 +1074,12 @@ function playViaIframe(track) {
 }
 
 // Media Session Setup (lockscreen / system notification controls)
+function setMediaPlaybackState(playbackState) {
+  if ('mediaSession' in navigator) {
+    try { navigator.mediaSession.playbackState = playbackState; } catch (e) { /* ignore */ }
+  }
+}
+
 function setupMediaSession(track, thumbnail) {
   if (!('mediaSession' in navigator)) return;
 
