@@ -470,6 +470,7 @@ const durationTimeEl = document.getElementById('duration-time');
 const progressBar = document.getElementById('progress-bar');
 const progressBarContainer = document.getElementById('progress-bar-container');
 const audioPlayer = document.getElementById('audio-player');
+const engineAlert = document.getElementById('engine-alert');
 
 const tabChannelsBtn = document.getElementById('tab-channels-btn');
 const tabTracksBtn = document.getElementById('tab-tracks-btn');
@@ -979,6 +980,14 @@ function revokeCurrentBlob() {
   }
 }
 
+// Fault light in the header. The embed fallback is silent by design — it just
+// plays — so a server that quietly stopped being reachable (a restarted tunnel
+// hands out a NEW trycloudflare address) looked like "the app randomly broke in
+// the background". Lit = we are on the embed, background playback is fragile.
+function setEngineAlert(onEmbed) {
+  if (engineAlert) engineAlert.hidden = !onEmbed;
+}
+
 async function playViaServer(track) {
   state.engine = 'server';
   clearInterval(progressTimer);
@@ -1042,6 +1051,7 @@ async function playViaServer(track) {
     audioPlayer.src = currentAudioBlobUrl;
     audioPlayer.load();
     applyPlaybackRate(); // load() resets the rate — re-apply the chosen speed
+    setEngineAlert(false); // server reached — clear the fault light
     trackTitle.textContent = track.title;
     audioPlayer.play().catch((err) => console.warn('audio play() rejected:', err));
   } catch (e) {
@@ -1055,6 +1065,9 @@ async function playViaServer(track) {
 // Play through the hidden YouTube IFrame player (no-setup fallback).
 function playViaIframe(track) {
   state.engine = 'iframe';
+  // Every route into the embed is a degraded one: either no server address is
+  // saved, or the saved one failed. Both mean background playback is unreliable.
+  setEngineAlert(true);
   if (audioDownloadAbort) audioDownloadAbort.abort(); // stop any server download
   try {
     audioPlayer.pause();

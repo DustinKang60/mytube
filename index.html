@@ -18,7 +18,11 @@
     <!-- Header -->
     <header class="app-header">
       <div class="logo">
-        <span class="logo-accent">my</span>tube<span class="brand">작은앱공방</span>
+        <span class="logo-accent">my</span>tube<span class="brand">작은앱공방</span><!--
+          서버에 못 붙어 유튜브 임베드(포그라운드 전용)로 재생 중일 때만 켜지는 표시등.
+          임베드로 넘어가는 것이 조용해서 "왜 백그라운드에서 끊기지?"로 이어졌던 탓에 둔다. -->
+        <span id="engine-alert" class="engine-alert" hidden
+              title="서버에 연결되지 않아 유튜브로 재생 중입니다 (백그라운드 재생 불안정)">●</span>
       </div>
       <button id="settings-btn" class="icon-btn" aria-label="설정">
         <i data-lucide="settings"></i>

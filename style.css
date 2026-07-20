@@ -83,6 +83,30 @@ body {
   color: var(--text-muted);
 }
 
+/* Fault light: lit only while playback fell back to the YouTube embed.
+   Same size as the brand mark so it reads as part of that line, not a control. */
+.engine-alert {
+  margin-left: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: #ff3b30;
+  animation: engine-blink 1.2s ease-in-out infinite;
+}
+
+.engine-alert[hidden] { display: none; }
+
+@keyframes engine-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.15; }
+}
+
+/* Blinking is the whole point, but respect users who ask for less motion —
+   the dot still shows, it just holds steady. */
+@media (prefers-reduced-motion: reduce) {
+  .engine-alert { animation: none; }
+}
+
 /* Buttons */
 .icon-btn {
   background: rgba(255, 255, 255, 0.05);
